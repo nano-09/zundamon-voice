@@ -4,7 +4,7 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Events, REST, Routes, MessageFlags } from 'discord.js';
 import { commandDefinitions, handleCommand } from './commands.js';
-import { enqueue, leaveChannel } from './player.js';
+import { enqueue, leaveChannel, leaveAllChannels } from './player.js';
 import { getGuildConfig } from './config.js';
 
 const token = process.env.DISCORD_TOKEN;
@@ -91,9 +91,9 @@ client.on(Events.MessageCreate, async (message) => {
     else return; // nothing to say
   }
 
-  // Prepend the author's display name
+  // Prepend the author's display name if readName is not false
   const name = message.member?.displayName ?? message.author.username;
-  const fullText = `${name}。${text}`;
+  const fullText = cfg.readName === false ? text : `${name}。${text}`;
 
   enqueue(message.guild.id, fullText);
 });
@@ -116,6 +116,17 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     }
   }
 });
+
+// ── Graceful Shutdown ─────────────────────────────────────────────────────────
+function shutdown() {
+  console.log('\n🛑 終了シグナルを受信しました。すべてのボイスチャンネルから退出します...');
+  leaveAllChannels();
+  client.destroy();
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 client.login(token);

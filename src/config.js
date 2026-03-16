@@ -21,7 +21,7 @@ function saveConfig(data) {
 /**
  * Returns the config object for a given guild.
  * @param {string} guildId
- * @returns {{ textChannelId?: string, voiceChannelId?: string }}
+ * @returns {{ textChannelId?: string, voiceChannelId?: string, speakerId?: number, readName?: boolean, speed?: number, pitch?: number, volume?: number, chatMode?: boolean }}
  */
 export function getGuildConfig(guildId) {
   const all = loadConfig();
@@ -31,7 +31,7 @@ export function getGuildConfig(guildId) {
 /**
  * Updates config values for a given guild (partial update).
  * @param {string} guildId
- * @param {{ textChannelId?: string, voiceChannelId?: string }} updates
+ * @param {{ textChannelId?: string, voiceChannelId?: string, speakerId?: number, readName?: boolean, speed?: number, pitch?: number, volume?: number }} updates
  */
 export function setGuildConfig(guildId, updates) {
   const all = loadConfig();

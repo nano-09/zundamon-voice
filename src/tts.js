@@ -15,9 +15,12 @@ const MAX_TEXT_LENGTH = 200;
  * Synthesizes text using VOICEVOX and returns a Readable stream (WAV audio).
  * @param {string} text - The text to synthesize
  * @param {number} [speakerId] - Optional specific speaker ID to use
+ * @param {number} [speed=1.0] - Speech speed
+ * @param {number} [pitch=0.0] - Speech pitch
+ * @param {number} [volume=1.0] - Speech volume
  * @returns {Promise<Readable>} A readable stream containing WAV audio bytes
  */
-export async function synthesize(text, speakerId) {
+export async function synthesize(text, speakerId, speed = 1.0, pitch = 0.0, volume = 1.0) {
   const truncated = text.slice(0, MAX_TEXT_LENGTH);
   const targetSpeakerId = speakerId !== undefined ? speakerId : SPEAKER_ID;
 
@@ -32,6 +35,9 @@ export async function synthesize(text, speakerId) {
   );
 
   const query = queryRes.data;
+  if (speed !== undefined) query.speedScale = speed;
+  if (pitch !== undefined) query.pitchScale = pitch;
+  if (volume !== undefined) query.volumeScale = volume;
 
   // Step 2: Synthesize WAV audio from the query
   const synthRes = await axios.post(

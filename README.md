@@ -9,7 +9,7 @@ Discord のテキストチャンネルのメッセージを、**ずんだもん*
 | 要件 | 詳細 |
 |------|------|
 | **Node.js** | v18 以上 |
-| **VOICEVOX Engine** | ローカルで起動 (port 50021) → [ダウンロード](https://voicevox.hiho.jp/) |
+| **VOICEVOX Engine** | ローカルで起動 (port 50021) → [ダウンロード](https://voicevox.hiroshiba.jp/) |
 | **Discord Bot Token** | [Developer Portal](https://discord.com/developers/applications) で取得 |
 | **ffmpeg** | `ffmpeg-static` npm パッケージに同梱されています |
 
