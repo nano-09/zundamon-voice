@@ -178,16 +178,16 @@ export async function handleCommand(interaction) {
 
   // ── /chatmode ────────────────────────────────────────────────
   if (commandName === 'chatmode') {
-    const enabled = interaction.options.getBoolean('enabled');
-    setGuildConfig(guild.id, { chatMode: enabled });
-
     try {
-      // First, acknowledge the interaction to prevent 3s timeout
+      // First, acknowledge the interaction immediately to prevent 3s timeout
       await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
     } catch (err) {
       console.warn('⚠️ [chatmode] Interaction timeout:', err.message);
       return;
     }
+
+    const enabled = interaction.options.getBoolean('enabled');
+    setGuildConfig(guild.id, { chatMode: enabled });
 
     if (!enabled) {
       return interaction.editReply('✅ AIによる自然会話モードを **オフ** にしたのだ。');
