@@ -2,9 +2,9 @@
 // Main entry point for the Zundamon Discord TTS bot
 
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Events, REST, Routes } from 'discord.js';
+import { Client, GatewayIntentBits, Events, REST, Routes, MessageFlags } from 'discord.js';
 import { commandDefinitions, handleCommand } from './commands.js';
-import { enqueue } from './player.js';
+import { enqueue, leaveChannel } from './player.js';
 import { getGuildConfig } from './config.js';
 
 const token = process.env.DISCORD_TOKEN;
@@ -53,6 +53,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await handleCommand(interaction);
   } catch (err) {
     console.error('[InteractionCreate]', err);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+    } else {
+      await interaction.reply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+    }
   }
 });
 
@@ -91,6 +96,25 @@ client.on(Events.MessageCreate, async (message) => {
   const fullText = `${name}。${text}`;
 
   enqueue(message.guild.id, fullText);
+});
+
+// ── Auto-disconnect on empty voice channel ────────────────────────────────────
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  // We only care if someone leaves or moves channels
+  if (oldState.channelId && oldState.channelId !== newState.channelId) {
+    const channel = oldState.channel;
+    if (channel) {
+      // Check if the bot is in this channel
+      const botMember = channel.members.get(client.user.id);
+      if (botMember) {
+        // Count non-bot members
+        const humanMembers = channel.members.filter(m => !m.user.bot);
+        if (humanMembers.size === 0) {
+          leaveChannel(oldState.guild.id);
+        }
+      }
+    }
+  }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

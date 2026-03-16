@@ -1,7 +1,7 @@
 // src/commands.js
 // Defines all slash command handlers
 
-import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } from 'discord.js';
 import { joinChannel, leaveChannel, isConnected } from './player.js';
 import { getGuildConfig, setGuildConfig } from './config.js';
 
@@ -25,8 +25,22 @@ export const commandDefinitions = [
     ),
 
   new SlashCommandBuilder()
+    .setName('setvoice')
+    .setDescription('読み上げる声（話者ID）を設定します')
+    .addIntegerOption((opt) =>
+      opt
+        .setName('voiceid')
+        .setDescription('話者ID（例: 3=ずんだもん ノーマル）')
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
     .setName('status')
     .setDescription('現在の設定と接続状態を表示します'),
+
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('ボットのコマンド一覧と使い方を表示します'),
 ].map((cmd) => cmd.toJSON());
 
 /**
@@ -39,7 +53,7 @@ export async function handleCommand(interaction) {
   if (!guild) {
     return interaction.reply({
       content: 'このコマンドはサーバー内でのみ使用できます。',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral], // MessageFlags.Ephemeral
     });
   }
 
@@ -49,11 +63,11 @@ export async function handleCommand(interaction) {
     if (!voiceChannel) {
       return interaction.reply({
         content: '❌ まずボイスチャンネルに参加してください！',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
     try {
       await joinChannel(voiceChannel);
       setGuildConfig(guild.id, { voiceChannelId: voiceChannel.id });
@@ -72,11 +86,11 @@ export async function handleCommand(interaction) {
     if (!isConnected(guild.id)) {
       return interaction.reply({
         content: '❌ ボイスチャンネルに参加していません。',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     }
     leaveChannel(guild.id);
-    return interaction.reply({ content: '👋 退出しました！', ephemeral: true });
+    return interaction.reply({ content: '👋 退出しました！', flags: [MessageFlags.Ephemeral] });
   }
 
   // ── /setchannel ────────────────────────────────────────────────
@@ -85,13 +99,23 @@ export async function handleCommand(interaction) {
     if (!channel?.isTextBased()) {
       return interaction.reply({
         content: '❌ テキストチャンネルを選択してください。',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     }
     setGuildConfig(guild.id, { textChannelId: channel.id });
     return interaction.reply({
       content: `✅ <#${channel.id}> のメッセージを読み上げます！`,
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
+    });
+  }
+
+  // ── /setvoice ────────────────────────────────────────────────
+  if (commandName === 'setvoice') {
+    const voiceId = interaction.options.getInteger('voiceid');
+    setGuildConfig(guild.id, { speakerId: voiceId });
+    return interaction.reply({
+      content: `✅ 読み上げる声を話者ID **${voiceId}** に設定しました！`,
+      flags: [MessageFlags.Ephemeral],
     });
   }
 
@@ -107,7 +131,25 @@ export async function handleCommand(interaction) {
       cfg.textChannelId
         ? `📝 読み上げチャンネル: <#${cfg.textChannelId}>`
         : '📝 読み上げチャンネル: 未設定',
+      `🎤 話者ID: ${cfg.speakerId !== undefined ? cfg.speakerId : 'デフォルト (ずんだもん)'}`,
     ];
-    return interaction.reply({ content: lines.join('\n'), ephemeral: true });
+    return interaction.reply({ content: lines.join('\n'), flags: [MessageFlags.Ephemeral] });
+  }
+
+  // ── /help ──────────────────────────────────────────────────────
+  if (commandName === 'help') {
+    const helpText = [
+      '**📢 ずんだもん ボイス読み上げボット コマンド一覧**',
+      '',
+      '🔹 `/join` - 現在あなたが参加しているボイスチャンネルにボットを呼びます',
+      '🔹 `/leave` - ボットをボイスチャンネルから退出させます',
+      '🔹 `/setchannel <チャンネル>` - 読み上げ対象のテキストチャンネルを設定します',
+      '🔹 `/setvoice <話者ID>` - 読み上げる声（話者ID）を変更します（例：3=ずんだもん ノーマル、2=四国めたん ノーマル）',
+      '🔹 `/status` - 現在のボットの接続状態や設定を確認します',
+      '🔹 `/help` - このヘルプメッセージを表示します',
+      '',
+      '*※ 話者IDはVOICEVOXの仕様に準拠します。一覧は公式サイト等をご確認ください。*'
+    ].join('\n');
+    return interaction.reply({ content: helpText, flags: [MessageFlags.Ephemeral] });
   }
 }

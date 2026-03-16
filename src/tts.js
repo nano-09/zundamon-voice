@@ -14,17 +14,19 @@ const MAX_TEXT_LENGTH = 200;
 /**
  * Synthesizes text using VOICEVOX and returns a Readable stream (WAV audio).
  * @param {string} text - The text to synthesize
+ * @param {number} [speakerId] - Optional specific speaker ID to use
  * @returns {Promise<Readable>} A readable stream containing WAV audio bytes
  */
-export async function synthesize(text) {
+export async function synthesize(text, speakerId) {
   const truncated = text.slice(0, MAX_TEXT_LENGTH);
+  const targetSpeakerId = speakerId !== undefined ? speakerId : SPEAKER_ID;
 
   // Step 1: Get the audio query (phoneme/pitch/speed data)
   const queryRes = await axios.post(
     `${VOICEVOX_URL}/audio_query`,
     null,
     {
-      params: { text: truncated, speaker: SPEAKER_ID },
+      params: { text: truncated, speaker: targetSpeakerId },
       headers: { 'Content-Type': 'application/json' },
     }
   );
@@ -36,7 +38,7 @@ export async function synthesize(text) {
     `${VOICEVOX_URL}/synthesis`,
     query,
     {
-      params: { speaker: SPEAKER_ID },
+      params: { speaker: targetSpeakerId },
       headers: { 'Content-Type': 'application/json' },
       responseType: 'arraybuffer',
     }

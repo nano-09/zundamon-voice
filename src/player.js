@@ -10,6 +10,7 @@ import {
   entersState,
 } from '@discordjs/voice';
 import { synthesize } from './tts.js';
+import { getGuildConfig } from './config.js';
 
 // Map of guildId -> { connection, player, queue, playing }
 const guilds = new Map();
@@ -133,14 +134,15 @@ async function processQueue(guildId) {
   const text = state.queue.shift();
 
   try {
-    const audioStream = await synthesize(text);
+    const cfg = getGuildConfig(guildId);
+    const audioStream = await synthesize(text, cfg.speakerId);
     const resource = createAudioResource(audioStream, {
       // WAV format — no special input type needed
       inlineVolume: false,
     });
     state.player.play(resource);
   } catch (err) {
-    console.error('[TTS] Synthesis error:', err.message);
+    console.error('[TTS] Synthesis error:', err.response?.data?.message || err.message || err.code || err);
     state.playing = false;
     processQueue(guildId); // Try next item
   }
