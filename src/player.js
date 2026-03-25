@@ -10,9 +10,10 @@ import {
   VoiceConnectionStatus,
   entersState,
   EndBehaviorType,
+  StreamType,
 } from '@discordjs/voice';
 import { synthesize } from './tts.js';
-import { getGuildConfig, setGuildConfig, updateGuildMeta } from './config.js';
+import { getGuildConfig, setGuildConfig, updateGuildMeta, getFullGuildConfig } from './config.js';
 import { logToSupabase } from './db_supabase.js';
 import OpusScript from 'opusscript';
 import { processAudioLocally, isWhisperReady } from './ai.js';
@@ -22,6 +23,7 @@ import ytSearch from 'yt-search';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import ffmpegPath from 'ffmpeg-static';
 
 // Map of guildId -> { connection, player, queue, playing, aiGenerating, currentSong }
 const guilds = new Map();
@@ -100,19 +102,22 @@ export async function joinChannel(voiceChannel) {
     }
 
     // Auto-exit karaoke mode if queue is empty
-    const cfg = getGuildConfig(voiceChannel.guild.id);
-    if (cfg.karaokeMode && state.queue.length === 0) {
-      setGuildConfig(voiceChannel.guild.id, { karaokeMode: false });
-      updateGuildMeta(voiceChannel.guild.id, { status: 'In Voice' });
-    }
+    checkAutoExitKaraoke(voiceChannel.guild.id);
 
     processQueue(voiceChannel.guild.id);
   });
 
   player.on('error', (err) => {
     console.error(`[G:${voiceChannel.guild.id}] [ERROR] Player Error:`, err.message);
+    if (err.stack) console.error(err.stack);
+    if (err.resource) {
+      console.error(`[Player] Resource details: InputType=${err.resource.inputType}, PlaybackDuration=${err.resource.playbackDuration}`);
+    }
     logToSupabase(voiceChannel.guild.id, 'err', `Player Error: ${err.message}`);
     state.playing = false;
+    state.currentSong = null;
+    
+    checkAutoExitKaraoke(voiceChannel.guild.id);
     processQueue(voiceChannel.guild.id);
   });
 
@@ -260,6 +265,7 @@ export function leaveChannel(guildId) {
       state.currentProcess = null;
     }
     state.connection.destroy();
+    setGuildConfig(guildId, { karaokeMode: false });
     updateGuildMeta(guildId, { status: 'Idle' });
     guilds.delete(guildId);
   } else {
@@ -267,6 +273,7 @@ export function leaveChannel(guildId) {
     const orphan = getVoiceConnection(guildId);
     if (orphan) {
       orphan.destroy();
+      setGuildConfig(guildId, { karaokeMode: false });
       updateGuildMeta(guildId, { status: 'Idle' });
     }
   }
@@ -302,7 +309,10 @@ export function leaveAllChannels() {
  */
 export function enqueue(guildId, text, userId = null) {
   const state = getGuildState(guildId);
-  if (!state.connection) return; // Not connected, silently ignore
+  if (!state.connection) {
+    console.log(`[Player] [DEBUG] Enqueue called for guild ${guildId} but not connected to voice. Use /join.`);
+    return; // Not connected, silently ignore
+  }
   
   // Do not enqueue TTS if karaoke mode is active
   const cfg = getGuildConfig(guildId);
@@ -404,10 +414,12 @@ export async function enqueueMusic(guildId, query, userId) {
 
 export function pauseMusic(guildId) {
   const state = getGuildState(guildId);
-  if (!state.connection || !state.player) return null;
-  if (!state.playing && state.player.state.status !== AudioPlayerStatus.Paused) return null;
+  if (!state.player) return null;
   
-  if (state.player.state.status === AudioPlayerStatus.Paused) {
+  const status = state.player.state.status;
+  if (status === AudioPlayerStatus.Idle) return null;
+  
+  if (status === AudioPlayerStatus.Paused) {
     state.player.unpause();
     return false; // Result is false = unpaused
   } else {
@@ -418,15 +430,38 @@ export function pauseMusic(guildId) {
 
 export function skipMusic(guildId) {
   const state = getGuildState(guildId);
-  if (!state.connection || !state.player || !state.playing) return false;
-  
-  if (state.currentProcess) {
-    try { state.currentProcess.kill(); } catch (e) {}
-    state.currentProcess = null;
+  if (!state.player) return false;
+
+  const status = state.player.state.status;
+  console.log(`[Skip] G:${guildId} - Status: ${status}, CurrentSong: ${!!state.currentSong}`);
+
+  if (state.currentSong || status !== AudioPlayerStatus.Idle) {
+    // 1. Kill any active transcoding processes immediately
+    if (state.currentProcess) {
+      try { state.currentProcess.kill(); } catch (e) {}
+      state.currentProcess = null;
+    }
+    
+    // 2. Clear current song state immediately
+    state.currentSong = null;
+    state.playing = false;
+
+    // 3. Check for auto-exit before moving to next (or stopping)
+    const musicInUpcoming = state.queue.some(item => item.type === 'music');
+    if (!musicInUpcoming) {
+      console.log(`[G:${guildId}] [Player] Skipping last song. Exiting karaoke mode.`);
+      setGuildConfig(guildId, { karaokeMode: false });
+      updateGuildMeta(guildId, { status: 'In Voice' });
+    }
+
+    // 4. Force stop the player (clears current resource)
+    // This will trigger the Idle event, which will then call processQueue() for the next song.
+    state.player.stop(true); 
+
+    return true;
   }
   
-  state.player.stop(); // This triggers Idle event to play the next song
-  return true;
+  return false;
 }
 
 export function getQueue(guildId) {
@@ -455,6 +490,25 @@ export function isConnected(guildId) {
   return !!getVoiceConnection(guildId);
 }
 
+/**
+ * Checks if music queue is empty and reverts to TTS mode if needed.
+ */
+function checkAutoExitKaraoke(guildId) {
+  const state = guilds.get(guildId);
+  if (!state) return;
+
+  const cfg = getGuildConfig(guildId);
+  // We check if queue is empty. We don't check state.playing here because 
+  // this is usually called right after a song finishes or errors.
+  const musicInQueue = state.queue.some(item => item.type === 'music');
+  
+  if (cfg.karaokeMode && !musicInQueue) {
+    console.log(`[G:${guildId}] [Player] Queue empty. Reverting to TTS mode.`);
+    setGuildConfig(guildId, { karaokeMode: false });
+    updateGuildMeta(guildId, { status: 'In Voice' });
+  }
+}
+
 async function processQueue(guildId) {
   const state = guilds.get(guildId);
   if (!state || state.playing || state.queue.length === 0) return;
@@ -471,29 +525,75 @@ async function processQueue(guildId) {
     else if (item.type === 'music') {
       state.currentSong = item;
       
-      // Use raw child_process.spawn to avoid tinyspawn's ChildProcessError on SIGTERM
-      // Robust binary path resolution for yt-dlp
       const ytdlpBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/youtube-dl-exec/bin/yt-dlp.exe');
       
-      const subprocess = spawn(ytdlpBin, [
-        item.url, '--output', '-', '--quiet', '--no-playlist', '--format', 'bestaudio', '--limit-rate', '10M',
+      const ytdlp = spawn(ytdlpBin, [
+        item.url,
+        '--output', '-',
+        '--quiet',
+        '--no-playlist',
+        '--format', 'bestaudio',
+        '--no-cache-dir',
+        '--no-part',
+        '--ignore-config',
         '--js-runtimes', 'node'
       ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
-      subprocess.stderr.on('data', data => console.error(`[G:${guildId}] [yt-dlp] Error:`, data.toString().trim()));
-      subprocess.on('error', err => console.error(`[G:${guildId}] [yt-dlp] Spawn error:`, err.message));
-      subprocess.on('close', (code, signal) => {
-        if (signal === 'SIGTERM') console.log(`[G:${guildId}] [yt-dlp] Process terminated (skip/leave).`);
-        else if (code && code !== 0) console.warn(`[G:${guildId}] [yt-dlp] Exited with code ${code}`);
-      });
-      state.currentProcess = subprocess;
-      
-      const resource = createAudioResource(subprocess.stdout, {
-        inlineVolume: true
-      });
       const cfg = getGuildConfig(guildId);
       const kVolume = cfg.karaokeVolume ?? 1.0;
-      resource.volume.setVolume(kVolume);
+
+      const ffmpeg = spawn(ffmpegPath, [
+        '-i', 'pipe:0',
+        '-af', `volume=${kVolume}`,
+        '-c:a', 'libopus',
+        '-f', 'opus',
+        '-ar', '48000',
+        '-ac', '2',
+        '-b:a', '128k',
+        'pipe:1'
+      ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
+      ytdlp.stdout.pipe(ffmpeg.stdin);
+
+      // Handle the EPIPE error on stdin to prevent crashing the whole process
+      ffmpeg.stdin.on('error', err => {
+        if (err.code !== 'EPIPE') {
+          console.error(`[G:${guildId}] [ffmpeg.stdin] Error:`, err.message);
+        }
+      });
+
+      ytdlp.stderr.on('data', data => {
+        const msg = data.toString().trim();
+        // Ignore the JS runtime warning since we are now providing it or just to keep logs clean
+        if (msg && !msg.includes('JavaScript runtime')) {
+          console.error(`[G:${guildId}] [yt-dlp] Error:`, msg);
+        }
+      });
+      ffmpeg.stderr.on('data', data => {
+        const msg = data.toString().trim();
+        if (msg.includes('Error')) console.error(`[G:${guildId}] [ffmpeg] Error:`, msg);
+      });
+      
+      ytdlp.on('error', err => console.error(`[G:${guildId}] [yt-dlp] Spawn error:`, err.message));
+      ffmpeg.on('error', err => console.error(`[G:${guildId}] [ffmpeg] Spawn error:`, err.message));
+
+      ytdlp.on('close', (code, signal) => {
+        if (signal === 'SIGTERM') console.log(`[G:${guildId}] [yt-dlp] Process terminated.`);
+        else if (code && code !== 0) console.warn(`[G:${guildId}] [yt-dlp] Exited with code ${code}`);
+      });
+      
+      state.currentProcess = { 
+        kill: () => {
+          try { ytdlp.kill(); } catch (e) {}
+          try { ffmpeg.kill(); } catch (e) {}
+        }
+      };
+      
+      const resource = createAudioResource(ffmpeg.stdout, {
+        inputType: StreamType.OggOpus,
+        inlineVolume: false // Disable to ensure FFmpeg-encoded Opus pass-through
+      });
+      console.log(`[Player] Music resource created. StreamType: OggOpus, InlineVolume: false`);
       
       state.player.play(resource);
     } 
@@ -505,7 +605,25 @@ async function processQueue(guildId) {
       if (!audioStream) throw new Error('Audio synthesis failed or was pre-emptively aborted');
 
       console.log(`[G:${guildId}] [BOT] Speaking: "${text}"`);
-      const resource = createAudioResource(audioStream, {
+
+      const cfg = getFullGuildConfig(guildId).settings;
+      const ttsVolume = cfg.volume ?? 1.0;
+
+      // Use ffmpeg with libopus to encode playback stream for maximum stability
+      const ffmpeg = spawn(ffmpegPath, [
+        '-i', 'pipe:0',
+        '-af', `volume=${ttsVolume}`,
+        '-c:a', 'libopus',
+        '-f', 'opus',
+        '-ar', '48000',
+        '-ac', '2',
+        'pipe:1'
+      ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
+      audioStream.pipe(ffmpeg.stdin);
+
+      const resource = createAudioResource(ffmpeg.stdout, {
+        inputType: StreamType.OggOpus,
         inlineVolume: false,
       });
       state.player.play(resource);

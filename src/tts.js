@@ -3,9 +3,10 @@
 
 import axios from 'axios';
 import { Readable } from 'stream';
+import { getBotConfig } from './botConfig.js';
 
-const VOICEVOX_URL = process.env.VOICEVOX_URL || 'http://localhost:50021';
-const SPEAKER_ID = parseInt(process.env.VOICEVOX_SPEAKER || '3', 10);
+const VOICEVOX_URL = getBotConfig('VOICEVOX_URL', 'http://localhost:50021');
+const SPEAKER_ID = parseInt(getBotConfig('VOICEVOX_SPEAKER', '3'), 10);
 
 // Maximum text length to synthesize at once (VOICEVOX can handle long text but
 // extremely long messages may be truncated for usability)
@@ -25,6 +26,7 @@ export async function synthesize(text, speakerId, speed = 1.0, pitch = 0.0, volu
   const targetSpeakerId = speakerId !== undefined ? speakerId : SPEAKER_ID;
 
   // Step 1: Get the audio query (phoneme/pitch/speed data)
+  console.log(`[TTS] Generating query for speaker ${targetSpeakerId}...`);
   const queryRes = await axios.post(
     `${VOICEVOX_URL}/audio_query`,
     null,
@@ -32,7 +34,10 @@ export async function synthesize(text, speakerId, speed = 1.0, pitch = 0.0, volu
       params: { text: truncated, speaker: targetSpeakerId },
       headers: { 'Content-Type': 'application/json' },
     }
-  );
+  ).catch(err => {
+    console.error(`[TTS] VOICEVOX audio_query failed: ${err.message}`);
+    throw err;
+  });
 
   const query = queryRes.data;
   if (speed !== undefined) query.speedScale = speed;
@@ -51,8 +56,10 @@ export async function synthesize(text, speakerId, speed = 1.0, pitch = 0.0, volu
   );
 
   // Wrap the raw WAV buffer in a Node.js Readable stream
+  const buffer = Buffer.from(synthRes.data);
+  console.log(`[TTS] Synthesis complete. Buffer size: ${buffer.length} bytes.`);
   const stream = new Readable();
-  stream.push(Buffer.from(synthRes.data));
+  stream.push(buffer);
   stream.push(null);
   return stream;
 }

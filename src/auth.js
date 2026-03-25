@@ -3,6 +3,7 @@
 
 import nodemailer from 'nodemailer';
 import { getGuildConfig, setGuildConfig } from './config.js';
+import { getBotConfig } from './botConfig.js';
 import supabase from './db_supabase.js';
 
 /**
@@ -40,25 +41,25 @@ export async function sendLocalOtp(guildId, guildName) {
     otpCode: code
   });
 
-  const email = process.env.OWNER_EMAIL;
-  if (!email || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+  const email = getBotConfig('OWNER_EMAIL');
+  if (!email || !getBotConfig('SMTP_USER') || !getBotConfig('SMTP_PASS')) {
     console.warn('[2FA] OWNER_EMAIL or SMTP_USER/PASS not configured. Cannot send local OTP.');
     return;
   }
 
   const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.SMTP_PORT || '465', 10),
-    secure: (process.env.SMTP_PORT === '465' || !process.env.SMTP_PORT), 
+    host: getBotConfig('SMTP_HOST', 'smtp.gmail.com'),
+    port: parseInt(getBotConfig('SMTP_PORT', '465'), 10),
+    secure: (getBotConfig('SMTP_PORT') === '465' || !getBotConfig('SMTP_PORT')), 
     auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
+      user: getBotConfig('SMTP_USER'),
+      pass: getBotConfig('SMTP_PASS'),
     },
   });
 
   try {
     await transporter.sendMail({
-      from: `"Zundamon Bot" <${process.env.SMTP_USER}>`,
+      from: `"Zundamon Bot" <${getBotConfig('SMTP_USER')}>`,
       to: email,
       subject: `[Zundamon] サーバー認証コード: ${code}`,
       text: `新しいサーバー「${guildName}」でのボット使用リクエストがありました。\n\n以下の6桁の認証コードをDiscordのDMでボットに送信してください:\n\n${code}\n\n※このメールに心当たりがない場合は無視してください。`,

@@ -60,7 +60,7 @@ export const commandDefinitions = [
     .setName('chatmode')
     .setDescription('AIによる書き起こし＋自然会話モードを切り替えます')
     .addBooleanOption((opt) => opt.setName('enabled').setDescription('有効にする (True) または 無効にする (False)').setRequired(true)),
-    
+
   new SlashCommandBuilder()
     .setName('serverstatus')
     .setDescription('サーバーの設定と接続状態を表示します'),
@@ -99,9 +99,6 @@ export const commandDefinitions = [
     .setName('help')
     .setDescription('ボットのコマンド一覧と使い方を表示します'),
 
-  new SlashCommandBuilder()
-    .setName('voices')
-    .setDescription('利用可能な主な話者（声）の一覧を表示します'),
 
   new SlashCommandBuilder()
     .setName('addword')
@@ -230,15 +227,15 @@ export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName('loop')
     .setDescription('音楽のループ再生を設定します')
-    .addStringOption((opt) => 
+    .addStringOption((opt) =>
       opt.setName('mode')
-         .setDescription('ループモードを選択')
-         .setRequired(true)
-         .addChoices(
-           { name: 'オフ (Off)', value: 'off' },
-           { name: '1曲リピート (Track)', value: 'track' },
-           { name: '全曲リピート (Queue)', value: 'queue' }
-         )
+        .setDescription('ループモードを選択')
+        .setRequired(true)
+        .addChoices(
+          { name: 'オフ (Off)', value: 'off' },
+          { name: '1曲リピート (Track)', value: 'track' },
+          { name: '全曲リピート (Queue)', value: 'queue' }
+        )
     ),
 ].map((cmd) => cmd.toJSON());
 
@@ -250,17 +247,17 @@ const cleanTimers = new Map();
 
 // List of all command names for permission validation
 const ALL_COMMAND_NAMES = [
-  'join', 'leave', 'setchannel', 'setvoice', 'voiceparams', 
+  'join', 'leave', 'setchannel', 'setvoice', 'voiceparams',
   'voiceparams speed', 'voiceparams pitch', 'voiceparams volume',
   'chatmode', 'soundboard',
-  'serverstatus', 'mystatus', 'help', 'voices', 'addword', 'delword',
+  'serverstatus', 'mystatus', 'help', 'addword', 'delword',
   'listwords', 'readname', 'announce', 'cleanchat', 'trim', 'permissions',
   'play', 'pause', 'skip', 'queue', 'lyrics',
   'permissions set', 'permissions list', 'permissions reset',
   'musicvolume', 'servervoice', 'servervoiceparams',
   'servervoiceparams speed', 'servervoiceparams pitch', 'servervoiceparams volume',
   'customsound add', 'customsound remove', 'customsound list',
-  'customemoji add', 'customemoji remove', 'customemoji list'
+  'customemoji add', 'customemoji remove', 'customemoji list', 'loop'
 ];
 
 const VOICES_LIST = [
@@ -301,15 +298,16 @@ export async function handleAutocomplete(interaction) {
  * @param {string} guildId
  * @param {string} commandPath
  * @param {import('discord.js').GuildMember} member
+ * @param {string} [channelId]
  * @returns {boolean}
  */
-function checkPermission(guildId, commandPath, member) {
+function checkPermission(guildId, commandPath, member, channelId) {
   // Server owner always has access
   if (member.id === member.guild.ownerId) return true;
 
   const fullCfg = getFullGuildConfig(guildId);
   const perms = fullCfg.permissions;
-  
+
   if (!perms) {
     if (commandPath.startsWith('permissions')) return false;
     return true;
@@ -320,27 +318,48 @@ function checkPermission(guildId, commandPath, member) {
     const rules = perms[cmd];
 
     // 1. User specific rule overrides everything
-    if (rules[member.id]) return rules[member.id] === 'allow';
+    if (rules[member.id]) {
+      console.log(`[Permission] Found user override for ${member.user.tag}: ${rules[member.id]}`);
+      return rules[member.id] === 'allow';
+    }
+
+    // 1.5 Channel specific rule
+    if (channelId && rules[channelId]) {
+      console.log(`[Permission] Found channel override for #${channelId}: ${rules[channelId]}`);
+      return rules[channelId] === 'allow';
+    }
 
     // 2. Role specific rules (excluding @everyone / guildId)
     const roleIds = member.roles.cache.map(r => r.id).filter(id => id !== guildId);
     let hasRoleAllow = false;
     let hasRoleDeny = false;
-    
+
     for (const rid of roleIds) {
       if (rules[rid] === 'allow') hasRoleAllow = true;
       if (rules[rid] === 'deny') hasRoleDeny = true;
     }
-    
-    if (hasRoleDeny) return false;
-    if (hasRoleAllow) return true;
+
+    if (hasRoleDeny) {
+      console.log(`[Permission] Found role DENY for ${member.user.tag}`);
+      return false;
+    }
+    if (hasRoleAllow) {
+      console.log(`[Permission] Found role ALLOW for ${member.user.tag}`);
+      return true;
+    }
 
     // 3. @everyone rule
-    if (rules[guildId]) return rules[guildId] === 'allow';
+    if (rules[guildId]) {
+      console.log(`[Permission] Found @everyone override: ${rules[guildId]}`);
+      return rules[guildId] === 'allow';
+    }
 
     // 4. Default implicit logic
     const hasAnyAllow = Object.values(rules).some(v => v === 'allow');
-    if (hasAnyAllow) return false;
+    if (hasAnyAllow) {
+      console.log(`[Permission] Implicit DENY (whitelist mode active) for ${member.user.tag}`);
+      return false;
+    }
 
     return true;
   };
@@ -368,7 +387,7 @@ export async function handleCommand(interaction) {
 
   if (!guild) {
     return interaction.reply({
-      content: 'このコマンドはサーバー内でのみ使用できます。',
+      content: 'このコマンドはサーバー内でのみ使用できるのだ。',
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -376,7 +395,7 @@ export async function handleCommand(interaction) {
   // ── 2FA Auth check ──────────────────────────────────────────
   if (!isGuildAuthorized(guild.id)) {
     return interaction.reply({
-      content: '⛔ このサーバーは認証されていません。ボットオーナーに認証を依頼してください。',
+      content: '⛔ このサーバーは認証されていないのだ。ボットオーナーに認証を依頼してほしいのだ！',
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -384,7 +403,7 @@ export async function handleCommand(interaction) {
   // ── Blocked check ──────────────────────────────────────────
   if (isGuildBlocked(guild.id)) {
     return interaction.reply({
-      content: '🚫 このサーバーはボットオーナーによってブロックされています。コマンドは使用できません。',
+      content: '🚫 このサーバーはボットオーナーによってブロックされているのだ。コマンドは使用できないのだ。',
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -394,11 +413,11 @@ export async function handleCommand(interaction) {
   try {
     const subcommand = interaction.options.getSubcommand(false);
     if (subcommand) fullCommandPath = `${commandName} ${subcommand}`;
-  } catch (e) {}
+  } catch (e) { }
 
-  if (!checkPermission(guild.id, fullCommandPath, member)) {
+  if (!checkPermission(guild.id, fullCommandPath, member, interaction.channelId)) {
     return interaction.reply({
-      content: '🚫 あなたのユーザーまたはロールではこのコマンドを使用する権限がありません。',
+      content: '🚫 あなたのユーザー、現在のチャンネル、またはロールではこのコマンドを使用する権限がないのだ。',
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -412,7 +431,7 @@ export async function handleCommand(interaction) {
     const voiceChannel = member?.voice?.channel;
     if (!voiceChannel) {
       return interaction.reply({
-        content: '❌ まずボイスチャンネルに参加してください！',
+        content: '❌ まずボイスチャンネルに参加してほしいのだ！',
         flags: [MessageFlags.Ephemeral],
       });
     }
@@ -432,20 +451,18 @@ export async function handleCommand(interaction) {
         .setColor('#A5D6A7') // Zundamon Light Green
         .setTitle('接続しました')
         .setDescription(
-          `🔊 **${voiceChannel.name}** に接続しました。\n\n` +
-          `[ダッシュボード/設定](http://localhost:3000) | [利用規約](#) | [お問い合わせ](#)\n\n` +
+          `🔊 **${voiceChannel.name}** に接続したのだ。\n\n` +
           `**お知らせ:**\n` +
-          `|\n` +
-          `ずんだもん読み上げBOTをご利用いただきありがとうございます。\n` +
-          `ダッシュボードから詳細な詳細な権限管理や使用状況のアナリティクスを確認できますのだ。\n\n` +
-          `Tips: 読み上げるテキストチャンネルは \`/setchannel\` で設定できますのだ！`
+          `ずんだもん読み上げBOTをご利用いただきありがとうなのだ。\n` +
+          `ダッシュボードから詳細な詳細な権限管理や使用状況のアナリティクスを確認できるのだ。\n\n` +
+          `Tips: 読み上げるテキストチャンネルは \`/setchannel\` で設定できるのだ！`
         )
         .setTimestamp();
 
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('[join]', err);
-      await interaction.editReply('❌ ボイスチャンネルへの参加に失敗しました。');
+      await interaction.editReply('❌ ボイスチャンネルへの参加に失敗したのだ。');
     }
     return;
   }
@@ -454,13 +471,13 @@ export async function handleCommand(interaction) {
   if (commandName === 'leave') {
     if (!isConnected(guild.id)) {
       return interaction.reply({
-        content: '❌ ボイスチャンネルに参加していません。',
+        content: '❌ ボイスチャンネルに参加していないのだ。',
         flags: [MessageFlags.Ephemeral],
       });
     }
     leaveChannel(guild.id);
     setGuildConfig(guild.id, { voiceChannelId: null });
-    return interaction.reply({ content: '👋 退出しました！', flags: [MessageFlags.Ephemeral] });
+    return interaction.reply({ content: '👋 退出したのだ！', flags: [MessageFlags.Ephemeral] });
   }
 
   // ── /setchannel ────────────────────────────────────────────────
@@ -468,13 +485,13 @@ export async function handleCommand(interaction) {
     const channel = interaction.options.getChannel('channel');
     if (!channel?.isTextBased()) {
       return interaction.reply({
-        content: '❌ テキストチャンネルを選択してください。',
+        content: '❌ テキストチャンネルを選択してほしいのだ。',
         flags: [MessageFlags.Ephemeral],
       });
     }
     setGuildConfig(guild.id, { textChannelId: channel.id });
     return interaction.reply({
-      content: `✅ <#${channel.id}> のメッセージを読み上げます！`,
+      content: `✅ <#${channel.id}> のメッセージを読み上げるのだ！`,
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -487,7 +504,7 @@ export async function handleCommand(interaction) {
     userVoices[interaction.user.id] = voiceId;
     setGuildConfig(guild.id, { userVoices });
     return interaction.reply({
-      content: `✅ あなたの読み上げる声を話者ID **${voiceId}** に設定しました！`,
+      content: `✅ あなたの読み上げる声を話者ID **${voiceId}** に設定したのだ！`,
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -498,14 +515,14 @@ export async function handleCommand(interaction) {
     const pitch = interaction.options.getNumber('pitch');
     const volume = interaction.options.getNumber('volume');
 
-    if (speed !== null && !checkPermission(guild.id, 'voiceparams speed', member)) {
-      return interaction.reply({ content: '🚫 速度(speed)を変更する権限がありません。', flags: [MessageFlags.Ephemeral] });
+    if (speed !== null && !checkPermission(guild.id, 'voiceparams speed', member, interaction.channelId)) {
+      return interaction.reply({ content: '🚫 速度(speed)を変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
     }
-    if (pitch !== null && !checkPermission(guild.id, 'voiceparams pitch', member)) {
-      return interaction.reply({ content: '🚫 ピッチ(pitch)を変更する権限がありません。', flags: [MessageFlags.Ephemeral] });
+    if (pitch !== null && !checkPermission(guild.id, 'voiceparams pitch', member, interaction.channelId)) {
+      return interaction.reply({ content: '🚫 ピッチ(pitch)を変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
     }
-    if (volume !== null && !checkPermission(guild.id, 'voiceparams volume', member)) {
-      return interaction.reply({ content: '🚫 音量(volume)を変更する権限がありません。', flags: [MessageFlags.Ephemeral] });
+    if (volume !== null && !checkPermission(guild.id, 'voiceparams volume', member, interaction.channelId)) {
+      return interaction.reply({ content: '🚫 音量(volume)を変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
     }
 
     const cfg = getFullGuildConfig(guild.id).settings;
@@ -520,12 +537,12 @@ export async function handleCommand(interaction) {
       userParams[interaction.user.id] = myParams;
       setGuildConfig(guild.id, { userParams });
       return interaction.reply({
-        content: `✅ あなた専用の声設定を更新しました！\n速度: ${myParams.speed ?? 'デフォルト'}, ピッチ: ${myParams.pitch ?? 'デフォルト'}, 音量: ${myParams.volume ?? 'デフォルト'}`,
+        content: `✅ あなた専用の声設定を更新したのだ！\n速度: ${myParams.speed ?? 'デフォルト'}, ピッチ: ${myParams.pitch ?? 'デフォルト'}, 音量: ${myParams.volume ?? 'デフォルト'}`,
         flags: [MessageFlags.Ephemeral],
       });
     } else {
       return interaction.reply({
-        content: '⚠️ 変更するパラメータを指定してください。',
+        content: '⚠️ 変更するパラメータを指定してほしいのだ。',
         flags: [MessageFlags.Ephemeral],
       });
     }
@@ -541,7 +558,7 @@ export async function handleCommand(interaction) {
     }
 
     const enabled = interaction.options.getBoolean('enabled');
-    
+
     if (!enabled) {
       setGuildConfig(guild.id, { chatMode: false, chatModeUserId: null });
       cancelAiGeneration(guild.id);
@@ -592,7 +609,7 @@ export async function handleCommand(interaction) {
     const cfg = fullCfg.settings;
 
     const connected = isConnected(guild.id);
-    
+
     // Count permissions
     const perms = fullCfg.permissions;
     let ruleCount = 0;
@@ -602,35 +619,42 @@ export async function handleCommand(interaction) {
 
     const embed = new EmbedBuilder()
       .setColor('#81C784')
-      .setTitle(`📊 サーバー設定ステータス`)
+      .setTitle(`📊 サーバーの設定状況なのだ`)
       .setAuthor({ name: guild.name, iconURL: guild.iconURL() })
       .addFields(
         {
           name: '📡 接続状況',
-          value: `🔊 ボイス接続: ${connected ? '✅ 接続中' : '❌ 未接続'}\n📢 ボイスチャンネル: ${cfg.voiceChannelId ? `<#${cfg.voiceChannelId}>` : '未設定'}\n📝 読み上げチャンネル: ${cfg.textChannelId ? `<#${cfg.textChannelId}>` : '未設定'}`,
-          inline: false
-        },
-        {
-          name: '🎙️ 音声設定',
-          value: `🎤 デフォルト話者ID: ${cfg.speakerId !== undefined ? cfg.speakerId : 'ずんだもん (3)'}\n⚙️ デフォルト声設定: 速度=${cfg.speed ?? 1.0}, ピッチ=${cfg.pitch ?? 0.0}, 音量=${cfg.volume ?? 1.0}\n👤 名前読み上げ: ${cfg.readName === false ? '❌ オフ' : '✅ オン'}\n🚪 入退室読み上げ: ${cfg.announceVoice ? '✅ オン' : '❌ オフ'}`,
-          inline: false
-        },
-        {
-          name: '🤖 AI・システム設定',
-          value: `💬 AI会話モード: ${cfg.chatMode ? '✅ オン' : '❌ オフ'}\n🎙️ チャット使用ユーザー: ${cfg.chatModeUserId ? `<@${cfg.chatModeUserId}>` : '全員'}\n📢 サウンドボード: ${cfg.soundboardMode ? '✅ オン' : '❌ オフ'}\n✂️ 文字数制限: ${cfg.trimWordCount ? `${cfg.trimWordCount}文字` : '無制限'}`,
-          inline: false
-        },
-        {
-          name: '🎵 カラオケモード',
-          value: `状態: ${cfg.karaokeMode ? '✅ オン' : '❌ オフ'}\n音量: ${cfg.karaokeVolume ?? 1.0}`,
+          value: `> **ボイス:** ${cfg.voiceChannelId ? `<#${cfg.voiceChannelId}>` : '`未接続`'}\n` +
+            `> **テキスト:** ${cfg.textChannelId ? `<#${cfg.textChannelId}>` : '`未設定`'}`,
           inline: true
         },
         {
-          name: '🔒 権限ルール',
-          value: ruleCount > 0 ? `${ruleCount}件設定済み (\`/permissions list\`)` : 'なし (全員に開放)',
+          name: '🤖 実装モード',
+          value: `> **AI会話:** ${cfg.chatMode ? '`ON`' : '`OFF`'}\n` +
+            `> **カラオケ:** ${cfg.karaokeMode ? '`ON`' : '`OFF`'}\n` +
+            `> **サウンドボード:** ${cfg.soundboardMode ? '`ON`' : '`OFF`'}`,
+          inline: true
+        },
+        {
+          name: '🎙️ デフォルト音声設定',
+          value: `> **話者:** \`ずんだもん (${cfg.speakerId ?? 3})\`\n` +
+            `> **詳細:** 速度 \`${cfg.speed ?? 1.0}\` | ピッチ \`${cfg.pitch ?? 0.0}\` | 音量 \`${cfg.volume ?? 1.0}\``,
+          inline: false
+        },
+        {
+          name: '⚙️ システム設定',
+          value: `> **名前読込:** ${cfg.readName === false ? '`OFF`' : '`ON`'}\n` +
+            `> **入退告知:** ${cfg.announceVoice ? '`ON`' : '`OFF`'}`,
+          inline: true
+        },
+        {
+          name: '🔒 制限・権限',
+          value: `> **字数制限:** \`${cfg.trimWordCount || '無制限'}\`\n` +
+            `> **個別設定:** \`${ruleCount > 0 ? `${ruleCount}件` : 'なし'}\``,
           inline: true
         }
       )
+      .setFooter({ text: 'ずんだもんが高精度にお知らせするのだ！' })
       .setTimestamp();
 
     return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
@@ -649,7 +673,7 @@ export async function handleCommand(interaction) {
     const embed = new EmbedBuilder()
       .setColor('#81C784')
       .setAuthor({ name: interaction.user.username, iconURL: interaction.user.displayAvatarURL() })
-      .setTitle('🎤 あなたの声設定')
+      .setTitle('🎤 あなたの声設定なのだ')
       .setDescription('サーバー設定（デフォルト）よりもこの個人設定が優先されますのだ！')
       .addFields(
         { name: '🔊 話者ID', value: `${voiceId !== undefined ? voiceId : `デフォルト (${cfg.speakerId ?? 3})`}`, inline: true },
@@ -661,34 +685,13 @@ export async function handleCommand(interaction) {
     return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
   }
 
-  // ── /voices ──────────────────────────────────────────────────
-  if (commandName === 'voices') {
-    const voicesText = [
-      '**📢 主なVOICEVOX話者ID一覧**',
-      '1 : ずんだもん (あまあま)',
-      '3 : ずんだもん (ノーマル)',
-      '5 : ずんだもん (セクシー)',
-      '7 : ずんだもん (ツンツン)',
-      '2 : 四国めたん (あまあま)',
-      '4 : 四国めたん (ノーマル)',
-      '6 : 四国めたん (セクシー)',
-      '8 : 四国めたん (ツンツン)',
-      '10: 雨晴はう (ノーマル)',
-      '13: 青山龍星 (ノーマル)',
-      '14: 冥鳴ひまり (ノーマル)',
-      '16: 九州そら (あまあま)',
-      '',
-      '*※ その他の話者IDはVOICEVOX公式サイトまたはアプリで確認できます。*'
-    ].join('\n');
-    return interaction.reply({ content: voicesText, flags: [MessageFlags.Ephemeral] });
-  }
 
   // ── /readname ────────────────────────────────────────────────
   if (commandName === 'readname') {
     const enabled = interaction.options.getBoolean('enabled');
     setGuildConfig(guild.id, { readName: enabled });
     return interaction.reply({
-      content: `✅ 発言者の名前読み上げを **${enabled ? 'オン' : 'オフ'}** にしました！`,
+      content: `✅ 発言者の名前読み上げを **${enabled ? 'オン' : 'オフ'}** にしたのだ！`,
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -733,7 +736,7 @@ export async function handleCommand(interaction) {
     const enabled = interaction.options.getBoolean('enabled');
     setGuildConfig(guild.id, { announceVoice: enabled });
     return interaction.reply({
-      content: `✅ ボイスチャンネルの入退室読み上げを **${enabled ? 'オン' : 'オフ'}** にしました！`,
+      content: `✅ ボイスチャンネルの入退室読み上げを **${enabled ? 'オン' : 'オフ'}** にしたのだ！`,
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -742,7 +745,7 @@ export async function handleCommand(interaction) {
   if (commandName === 'cleanchat') {
     const minutes = interaction.options.getInteger('minutes');
     const channel = interaction.channel;
-    
+
     // Save to Postgres
     const cfg = getFullGuildConfig(guild.id).settings;
     const cleanTasks = cfg.cleanChatTasks || {};
@@ -750,7 +753,7 @@ export async function handleCommand(interaction) {
     if (minutes <= 0) {
       delete cleanTasks[channel.id];
       setGuildConfig(guild.id, { cleanChatTasks: cleanTasks });
-      
+
       const timerKey = `${guild.id}-${channel.id}`;
       if (cleanTimers.has(timerKey)) {
         clearInterval(cleanTimers.get(timerKey));
@@ -779,12 +782,12 @@ export async function handleCommand(interaction) {
     setGuildConfig(guild.id, { trimWordCount: wordcount > 0 ? wordcount : 0 });
     if (wordcount > 0) {
       return interaction.reply({
-        content: `✂️ 読み上げる最大文字数を **${wordcount}文字** に設定しました！\n超過する場合は「以下略」と読み上げます。`,
+        content: `✂️ 読み上げる最大文字数を **${wordcount}文字** に設定したのだ！\n超過する場合は「以下略」と読み上げるのだ。`,
         flags: [MessageFlags.Ephemeral],
       });
     } else {
       return interaction.reply({
-        content: '✂️ 文字数制限を **無効** にしました！',
+        content: '✂️ 文字数制限を **無効** にしたのだ！',
         flags: [MessageFlags.Ephemeral],
       });
     }
@@ -801,7 +804,7 @@ export async function handleCommand(interaction) {
 
       if (!ALL_COMMAND_NAMES.includes(cmdName)) {
         return interaction.reply({
-          content: `❌ 「${cmdName}」は存在しないコマンドです。\n有効なコマンド: ${ALL_COMMAND_NAMES.join(', ')}`,
+          content: `❌ 「${cmdName}」は存在しないコマンドなのだ。\n有効なコマンドはこれらなのだ: ${ALL_COMMAND_NAMES.join(', ')}`,
           flags: [MessageFlags.Ephemeral],
         });
       }
@@ -810,13 +813,13 @@ export async function handleCommand(interaction) {
       const perms = fullCfg.permissions || {};
       if (!perms[cmdName]) perms[cmdName] = {};
       perms[cmdName][target.id] = action;
-      
+
       // Auto deny the general public if granting a specific user/role an allow exception
       // Skip this if the target is already @everyone
       if (action === 'allow' && target.id !== guild.id) {
         perms[cmdName][guild.id] = 'deny';
       }
-      
+
       // Use updateGuildMeta to ensure perms save to the top-level column, not the settings JSON
       updateGuildMeta(guild.id, { permissions: perms });
 
@@ -825,7 +828,7 @@ export async function handleCommand(interaction) {
       const suffix = action === 'allow' ? '\n（※他のすべてのユーザー（@everyone）は自動で拒否設定になります）' : '';
 
       return interaction.reply({
-        content: `✅ \`/${cmdName}\` → ${mention} を **${action === 'allow' ? '許可' : '拒否'}** に設定しました！${suffix}`,
+        content: `✅ \`/${cmdName}\` → ${mention} を **${action === 'allow' ? '許可' : '拒否'}** に設定したのだ！${suffix}`,
         flags: [MessageFlags.Ephemeral],
       });
     }
@@ -837,7 +840,7 @@ export async function handleCommand(interaction) {
 
       if (entries.length === 0) {
         return interaction.reply({
-          content: '📋 権限ルールはまだ設定されていません。すべてのコマンドが全員に開放されています。',
+          content: '📋 権限ルールはまだ設定されていないのだ。すべてのコマンドが全員に開放されているのだ！',
           flags: [MessageFlags.Ephemeral],
         });
       }
@@ -865,7 +868,7 @@ export async function handleCommand(interaction) {
 
       if (!perms[cmdName]) {
         return interaction.reply({
-          content: `⚠️ \`/${cmdName}\` には権限ルールが設定されていません。`,
+          content: `⚠️ \`/${cmdName}\` には権限ルールが設定されていないのだ。`,
           flags: [MessageFlags.Ephemeral],
         });
       }
@@ -874,7 +877,7 @@ export async function handleCommand(interaction) {
       updateGuildMeta(guild.id, { permissions: perms });
 
       return interaction.reply({
-        content: `🗑️ \`/${cmdName}\` の権限ルールをリセットしました！`,
+        content: `🗑️ \`/${cmdName}\` の権限ルールをリセットしたのだ！`,
         flags: [MessageFlags.Ephemeral],
       });
     }
@@ -941,7 +944,7 @@ export async function handleCommand(interaction) {
 
     const allowedFields = [];
     for (const category of categories) {
-      const allowedCommands = category.commands.filter(c => checkPermission(guild.id, c.cmd, member));
+      const allowedCommands = category.commands.filter(c => checkPermission(guild.id, c.cmd, member, interaction.channelId));
       if (allowedCommands.length > 0) {
         allowedFields.push({
           name: category.name,
@@ -965,7 +968,7 @@ export async function handleCommand(interaction) {
     const enabled = interaction.options.getBoolean('enabled');
     setGuildConfig(guild.id, { soundboardMode: enabled });
     return interaction.reply({
-      content: `✅ サウンドボードモードを **${enabled ? 'オン' : 'オフ'}** にしました！`,
+      content: `✅ サウンドボードモードを **${enabled ? 'オン' : 'オフ'}** にしたのだ！`,
       flags: [MessageFlags.Ephemeral],
     });
   }
@@ -974,12 +977,15 @@ export async function handleCommand(interaction) {
   if (commandName === 'play') {
     const voiceChannel = member?.voice?.channel;
     if (!voiceChannel && !isConnected(guild.id)) {
-      return interaction.reply({ content: '❌ まずボイスチャンネルに参加してください！', flags: [MessageFlags.Ephemeral] });
+      return interaction.reply({ content: '❌ まずボイスチャンネルに参加してほしいのだ！', flags: [MessageFlags.Ephemeral] });
     }
 
-    // Auto-enable karaoke mode and disable chat mode
-    setGuildConfig(guild.id, { karaokeMode: true, chatMode: false });
-    
+    // Auto-enable karaoke mode and disable chat mode if not already active
+    const cfg = getGuildConfig(guild.id);
+    if (!cfg.karaokeMode) {
+      setGuildConfig(guild.id, { karaokeMode: true, chatMode: false });
+    }
+
     const query = interaction.options.getString('query');
     await interaction.deferReply();
 
@@ -1050,7 +1056,7 @@ export async function handleCommand(interaction) {
     }
     const mode = interaction.options.getString('mode');
     setLoopMode(guild.id, mode);
-    
+
     const modeStr = mode === 'track' ? '🔂 **1曲リピート**' : mode === 'queue' ? '🔁 **全曲リピート**' : '▶️ **リピートオフ**';
     return interaction.reply({ content: `✅ ループモードを ${modeStr} に設定したのだ！` });
   }
@@ -1139,14 +1145,14 @@ export async function handleCommand(interaction) {
     const p = interaction.options.getNumber('pitch');
     const v = interaction.options.getNumber('volume');
 
-    if (s !== null && !checkPermission(guild.id, 'servervoiceparams speed', member)) {
-      return interaction.reply({ content: '🚫 速度(speed)のデフォルトを変更する権限がありません。', flags: [MessageFlags.Ephemeral] });
+    if (s !== null && !checkPermission(guild.id, 'servervoiceparams speed', member, interaction.channelId)) {
+      return interaction.reply({ content: '🚫 速度(speed)のデフォルトを変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
     }
-    if (p !== null && !checkPermission(guild.id, 'servervoiceparams pitch', member)) {
-      return interaction.reply({ content: '🚫 ピッチ(pitch)のデフォルトを変更する権限がありません。', flags: [MessageFlags.Ephemeral] });
+    if (p !== null && !checkPermission(guild.id, 'servervoiceparams pitch', member, interaction.channelId)) {
+      return interaction.reply({ content: '🚫 ピッチ(pitch)のデフォルトを変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
     }
-    if (v !== null && !checkPermission(guild.id, 'servervoiceparams volume', member)) {
-      return interaction.reply({ content: '🚫 音量(volume)のデフォルトを変更する権限がありません。', flags: [MessageFlags.Ephemeral] });
+    if (v !== null && !checkPermission(guild.id, 'servervoiceparams volume', member, interaction.channelId)) {
+      return interaction.reply({ content: '🚫 音量(volume)のデフォルトを変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
     }
 
     const cfg = getFullGuildConfig(guild.id).settings;
@@ -1154,7 +1160,7 @@ export async function handleCommand(interaction) {
     if (p !== null) cfg.pitch = p;
     if (v !== null) cfg.volume = v;
     setGuildConfig(guild.id, { speed: cfg.speed, pitch: cfg.pitch, volume: cfg.volume });
-    return interaction.reply({ content: `⚙️ サーバー全体の声のデフォルト設定を更新したのだ！\n速度=${cfg.speed??1}, ピッチ=${cfg.pitch??0}, 音量=${cfg.volume??1}` });
+    return interaction.reply({ content: `⚙️ サーバー全体の声のデフォルト設定を更新したのだ！\n速度=${cfg.speed ?? 1}, ピッチ=${cfg.pitch ?? 0}, 音量=${cfg.volume ?? 1}` });
   }
 
   // ── /customsound ────────────────────────────────────────────────
@@ -1166,7 +1172,7 @@ export async function handleCommand(interaction) {
     if (sub === 'add') {
       const keyword = interaction.options.getString('keyword');
       const file = interaction.options.getAttachment('file');
-      
+
       if (!file.contentType?.startsWith('audio/') && !file.contentType?.startsWith('video/')) {
         return interaction.reply({ content: '❌ 音声/動画ファイル(mp3/wav/ogg等)をアップロードしてほしいのだ！', flags: [MessageFlags.Ephemeral] });
       }
@@ -1175,40 +1181,40 @@ export async function handleCommand(interaction) {
       try {
         const ext = path.extname(file.name) || '.mp3';
         const fileName = `${guild.id}_${Date.now()}${ext}`;
-        
+
         const res = await fetch(file.url);
         if (!res.ok) throw new Error('Download failed');
         const arrayBuffer = await res.arrayBuffer();
-        
+
         // Upload to Supabase Storage Bucket
         const { error } = await supabase.storage.from('sounds').upload(fileName, arrayBuffer, {
           contentType: file.contentType || 'audio/mpeg',
           upsert: true
         });
         if (error) throw error;
-        
+
         const publicUrl = supabase.storage.from('sounds').getPublicUrl(fileName).data.publicUrl;
-        
+
         sounds[keyword] = { url: publicUrl, path: fileName };
         setGuildConfig(guild.id, { customSounds: sounds });
-        
+
         return interaction.editReply(`✅ キーワード「**${keyword}**」の音源を追加したのだ！`);
       } catch (e) {
         console.error('[CustomSound]', e);
         return interaction.editReply(`❌ 音源ファイルのアップロード中にエラーが起きたのだ。(Supabase Bucket "sounds" をパブリック設定で作成したか確認してください)`);
       }
     }
-    
+
     if (sub === 'remove') {
       const keyword = interaction.options.getString('keyword');
       if (sounds[keyword]) {
         const fileData = sounds[keyword];
-        
+
         // Delete file from Supabase Storage
         if (fileData.path) {
           await supabase.storage.from('sounds').remove([fileData.path]).catch(console.error);
         }
-        
+
         delete sounds[keyword];
         setGuildConfig(guild.id, { customSounds: sounds });
         return interaction.reply({ content: `🗑️ キーワード「**${keyword}**」の音源を削除したのだ！` });
@@ -1219,7 +1225,7 @@ export async function handleCommand(interaction) {
     if (sub === 'list') {
       const keys = Object.keys(sounds);
       if (keys.length === 0) return interaction.reply({ content: '📝 カスタム音源はまだ登録されていないのだ！', flags: [MessageFlags.Ephemeral] });
-      return interaction.reply({ content: `📝 **登録済みのカスタム音源 (${keys.length}件)**\n${keys.map(k => `・ ${k}`).join('\n')}`, flags: [MessageFlags.Ephemeral] });
+      return interaction.reply({ content: `📝 **登録済みのカスタム音源 (${keys.length}件) なのだ！**\n${keys.map(k => `・ ${k}`).join('\n')}`, flags: [MessageFlags.Ephemeral] });
     }
   }
 
@@ -1232,7 +1238,7 @@ export async function handleCommand(interaction) {
     if (sub === 'add') {
       const emojiInput = interaction.options.getString('emoji');
       const readText = interaction.options.getString('readtext');
-      
+
       const match = emojiInput.match(/<a?:\w+:(\d+)>/);
       const emojiId = match ? match[1] : emojiInput.trim();
 
@@ -1245,7 +1251,7 @@ export async function handleCommand(interaction) {
       const emojiInput = interaction.options.getString('emoji');
       const match = emojiInput.match(/<a?:\w+:(\d+)>/);
       const emojiId = match ? match[1] : emojiInput.trim();
-      
+
       if (emojis[emojiId]) {
         delete emojis[emojiId];
         setGuildConfig(guild.id, { customEmojis: emojis });
@@ -1258,7 +1264,7 @@ export async function handleCommand(interaction) {
       const keys = Object.keys(emojis);
       if (keys.length === 0) return interaction.reply({ content: '📝 絵文字辞書はまだ登録されていないのだ！', flags: [MessageFlags.Ephemeral] });
       const listStr = keys.map(k => `・ ID:${k} 👉 ${emojis[k]}`).join('\n');
-      return interaction.reply({ content: `📝 **登録済みの絵文字 (${keys.length}件)**\n${listStr}`, flags: [MessageFlags.Ephemeral] });
+      return interaction.reply({ content: `📝 **登録済みの絵文字 (${keys.length}件) なのだ！**\n${listStr}`, flags: [MessageFlags.Ephemeral] });
     }
   }
 }
@@ -1273,7 +1279,7 @@ export function startCleanChatTimer(client, guildId, channelId, intervalMs) {
     try {
       const channel = client.channels.cache.get(channelId);
       if (!channel) return;
-      
+
       const permissions = channel.permissionsFor(channel.guild?.members?.me);
       if (!permissions || !permissions.has(PermissionFlagsBits.ManageMessages) || !permissions.has(PermissionFlagsBits.ReadMessageHistory)) {
         console.warn(`[CleanChat] ⚠️ Missing manage messages permissions in #${channel.name} (${guildId}). Cleanup skipped.`);
@@ -1334,7 +1340,7 @@ async function fetchPetitLyrics(title) {
 
     const base64Data = match[1];
     const decoded = Buffer.from(base64Data, 'base64').toString('utf8');
-    
+
     // Normalize newlines and trim
     return decoded.replace(/\r\n/g, '\n').trim();
   } catch (err) {

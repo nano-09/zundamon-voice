@@ -69,8 +69,9 @@ export async function setGuildConfig(guildId, updates) {
   cached.settings = { ...cached.settings, ...updates };
   configCache.set(guildId, cached);
 
-  // Sync to Supabase in background
-  saveGuildConfigToDb(guildId, cached);
+  // Sync to Supabase in background (excluding permissions to prevent overwriting dashboard changes)
+  const { permissions, ...savePayload } = cached;
+  saveGuildConfigToDb(guildId, savePayload);
 }
 
 /**
@@ -83,5 +84,10 @@ export async function updateGuildMeta(guildId, { name, status, permissions }) {
   if (permissions !== undefined) cached.permissions = permissions;
   
   configCache.set(guildId, cached);
-  saveGuildConfigToDb(guildId, cached);
+
+  // When updating meta, we include permissions ONLY if they were explicitly passed to this function
+  const savePayload = { name: cached.name, status: cached.status, settings: cached.settings };
+  if (permissions !== undefined) savePayload.permissions = permissions;
+  
+  saveGuildConfigToDb(guildId, savePayload);
 }

@@ -118,7 +118,8 @@ export async function saveGuildConfigToDb(guildId, updates) {
     };
     const { error } = await supabase
       .from('guild_configs')
-      .upsert(payload, { onConflict: 'guild_id' });
+      .update(payload)
+      .eq('guild_id', guildId);
     if (error) throw error;
   } catch (err) {
     console.error(`[Supabase] saveGuildConfigToDb error for ${guildId}:`, err.message);

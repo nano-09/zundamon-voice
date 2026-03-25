@@ -179,7 +179,6 @@ C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -out:StartZundamon.exe L
 |---------|------|
 | `/setvoice <話者ID>` | 自分専用の声を設定（ユーザーごとに記憶） |
 | `/servervoice <ID>` | サーバー全体のデフォルトの声を指定 |
-| `/voices` | 利用可能な声のID一覧を表示 |
 | `/voiceparams [s] [p] [v]` | あなた専用の速度・ピッチ・音量を設定 |
 | `/servervoiceparams` | サーバー全体のデフォルト音声パラメータを指定 |
 | `/readname <True/False>` | 発言者の名前を読み上げるかどうか |

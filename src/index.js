@@ -5,6 +5,7 @@ import 'dotenv/config';
 import { Client, GatewayIntentBits, Events, REST, Routes, MessageFlags, Partials } from 'discord.js';
 import { commandDefinitions, handleCommand, startCleanChatTimer } from './commands.js';
 import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel } from './player.js';
+import { initBotConfig, getBotConfig } from './botConfig.js';
 import { getGuildConfig, setGuildConfig, initConfigs, getFullGuildConfig, refreshConfig } from './config.js';
 import { initMcpClient } from './mcpClient.js';
 import { isGuildAuthorized, sendLocalOtp, verifyLocalOtp } from './auth.js';
@@ -56,11 +57,22 @@ const emojiDictPath = path.join(__dirname, 'emoji_ja.json');
 const emojiDict = JSON.parse(fs.readFileSync(emojiDictPath, 'utf8'));
 const customEmojisPath = path.join(__dirname, '..', 'custom_emojis.json');
 
-const token = process.env.DISCORD_TOKEN;
-const clientId = process.env.CLIENT_ID;
+// ── Initialize Global Config ──────────────────────────────────────────────────
+await initBotConfig();
+console.log('[SYS] [INIT] Global bot config loaded.');
+
+process.on('uncaughtException', (err) => {
+  console.error('[SYS] [CRITICAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[SYS] [CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+const token = getBotConfig('DISCORD_TOKEN');
+const clientId = getBotConfig('CLIENT_ID');
 
 if (!token) {
-  console.error('❌ DISCORD_TOKEN が設定されていません。.env を確認してください。');
+  console.error('❌ DISCORD_TOKEN が設定されていません。Supabase Vault または .env を確認してください。');
   process.exit(1);
 }
 
@@ -82,6 +94,7 @@ if (clientId) {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers, // Required for fetching all members and accurate role tracking
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent, // Privileged intent — enable in Dev Portal!
@@ -92,13 +105,15 @@ const client = new Client({
 
 // ── Ready ─────────────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ ログイン成功: ${c.user.tag}`);
-  console.log(`   VOICEVOX: ${process.env.VOICEVOX_URL || 'http://localhost:50021'}`);
-  console.log(`   スピーカー ID: ${process.env.VOICEVOX_SPEAKER || '3'} (ずんだもん)`);
+  console.log(`[SYS] [INFO] Ready event fired! Bot user: ${c.user.tag}`);
+  console.log(`   VOICEVOX: ${getBotConfig('VOICEVOX_URL') || 'http://localhost:50021'}`);
+  console.log(`   スピーカー ID: ${getBotConfig('VOICEVOX_SPEAKER') || '3'} (ずんだもん)`);
 
   // Initialize configs from Supabase
   const guildIds = client.guilds.cache.map(g => g.id);
+  console.log(`[SYS] [INFO] Initializing configs for ${guildIds.length} guilds...`);
   await initConfigs(guildIds);
+  console.log(`[SYS] [INFO] Config initialization complete.`);
 
   // Resume clean chat intervals natively upon boot
   // Resume clean chat intervals natively upon boot
@@ -135,7 +150,7 @@ client.once(Events.ClientReady, async (c) => {
   }
 
   // Restart 2FA Flow for any unauthorized guilds found during startup
-  const ownerId = process.env.OWNER_DISCORD_ID;
+  const ownerId = getBotConfig('OWNER_DISCORD_ID');
   for (const guild of client.guilds.cache.values()) {
     if (!isGuildAuthorized(guild.id)) {
       console.log(`[SYS] Unauthorized guild detected on startup: ${guild.name} (${guild.id}). Starting 2FA flow.`);
@@ -210,9 +225,9 @@ client.on(Events.GuildCreate, async (guild) => {
     return;
   }
 
-  const ownerId = process.env.OWNER_DISCORD_ID;
+  const ownerId = getBotConfig('OWNER_DISCORD_ID');
   if (!ownerId) {
-    console.warn('[2FA] OWNER_DISCORD_ID not set in .env — cannot send auth DM.');
+    console.warn('[2FA] OWNER_DISCORD_ID not set — cannot send auth DM.');
     return;
   }
 
@@ -279,7 +294,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
   if (message.guild) return; // Skip guild messages — handled below
 
-  const ownerId = process.env.OWNER_DISCORD_ID;
+  const ownerId = getBotConfig('OWNER_DISCORD_ID');
   if (!ownerId || message.author.id !== ownerId) return;
 
   const code = message.content.trim();
@@ -337,19 +352,35 @@ setInterval(async () => {
 
 // ── Message listener → TTS ───────────────────────────────────────────────────
 client.on(Events.MessageCreate, async (message) => {
+  console.log(`[TTS] [DEBUG] Message received from ${message.author.tag} in channel ${message.channel.id}`);
   // Ignore bots (including self)
   if (message.author.bot) return;
   if (!message.guild) return;
 
   // Block unauthorized guilds
-  if (!isGuildAuthorized(message.guild.id)) return;
+  if (!isGuildAuthorized(message.guild.id)) {
+    console.log(`[TTS] [DEBUG] Skipping: Guild ${message.guild.id} ("${message.guild.name}") is not authorized.`);
+    return;
+  }
 
   const cfg = getGuildConfig(message.guild.id);
+  // console.log(`[TTS] [DEBUG] Config for ${message.guild.id}:`, JSON.stringify(cfg));
 
-  if (cfg.karaokeMode) return;
+  if (cfg.karaokeMode) {
+    console.log(`[TTS] [DEBUG] Skipping: Karaoke mode is active.`);
+    return;
+  }
 
   // Only process messages in the configured text channel
-  if (!cfg.textChannelId || message.channel.id !== cfg.textChannelId) return;
+  if (!cfg.textChannelId) {
+    console.log(`[TTS] [DEBUG] Skipping: No textChannelId configured for guild ${message.guild.id}. Use /setchannel.`);
+    return;
+  }
+  if (message.channel.id !== cfg.textChannelId) {
+    // Usually silent, but log if we suspect issues
+    // console.log(`[TTS] [DEBUG] Skipping: Match failed. Found: ${message.channel.id}, Expected: ${cfg.textChannelId}`);
+    return;
+  }
 
   // Check for soundboard keywords first
   const sounds = cfg.customSounds || {};
@@ -460,14 +491,18 @@ process.on('SIGTERM', shutdown);
 
 // Listen for custom IPC shutdown from dashboard (for Windows graceful exit)
 process.stdin.setEncoding('utf8');
-process.stdin.on('data', (data) => {
+// ── Member/Role Cache for Dashboard ──────────────────────────────────────────
+const memberRoleCache = new Map(); // guildId -> { members, roles, timestamp }
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+process.stdin.on('data', async (data) => {
   const msg = data.trim();
   if (msg === 'SHUTDOWN') {
     shutdown();
   }
   if (msg.startsWith('SYNC_CONFIG:')) {
     const guildId = msg.split(':')[1];
-    refreshConfig(guildId);
+    await refreshConfig(guildId).catch(console.error);
   }
   if (msg.startsWith('LEAVE_GUILD:')) {
     const guildId = msg.split(':')[1];
@@ -481,6 +516,79 @@ process.stdin.on('data', (data) => {
       });
     } else {
       console.warn(`[SYS] LEAVE_GUILD: Guild ${guildId} not found in cache.`);
+    }
+  }
+  if (msg.startsWith('RESOLVE_METADATA:')) {
+    const [_, guildId, idList] = msg.split(':');
+    const ids = idList ? idList.split(',') : [];
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      (async () => {
+        const results = {};
+        for (const id of ids) {
+          // Check Roles
+          const role = guild.roles.cache.get(id);
+          if (role) {
+            results[id] = { type: 'role', name: role.name, color: role.hexColor };
+            continue;
+          }
+          // Check Channels
+          const channel = guild.channels.cache.get(id);
+          if (channel) {
+             results[id] = { type: 'channel', name: channel.name };
+             continue;
+          }
+          // Check Members
+          try {
+            const member = await guild.members.fetch(id).catch(() => null);
+            if (member) {
+              results[id] = { type: 'user', name: member.displayName, avatar: member.user.displayAvatarURL() };
+            }
+          } catch (e) {}
+        }
+        console.log(`[SYS] [METADATA] ${JSON.stringify({ guildId, results })}`);
+      })();
+    }
+  }
+  if (msg.startsWith('LIST_MEMBERS_ROLES:')) {
+    const guildId = msg.split(':')[1];
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      (async () => {
+        try {
+          const now = Date.now();
+          const cached = memberRoleCache.get(guildId);
+          if (cached && (now - cached.timestamp < CACHE_DURATION)) {
+            console.log(`[SYS] Using cached members/roles for ${guild.name}`);
+            console.log(`[SYS] [MEMBERS_ROLES] ${JSON.stringify({ guildId, members: cached.members, roles: cached.roles })}`);
+            return;
+          }
+
+          console.log(`[SYS] Fetching members for ${guild.name} (Rate limit protection active)...`);
+          await guild.members.fetch();
+          const members = guild.members.cache
+            .filter(m => !m.user.bot)
+            .map(m => ({ id: m.id, name: m.displayName, avatar: m.user.displayAvatarURL({ size: 64 }) }))
+            .slice(0, 200);
+          const roles = guild.roles.cache
+            .filter(r => r.id !== guild.id)
+            .sort((a, b) => b.position - a.position)
+            .map(r => ({ id: r.id, name: r.name, color: r.hexColor }))
+            .slice(0, 100);
+          
+          memberRoleCache.set(guildId, { members, roles, timestamp: now });
+          console.log(`[SYS] [MEMBERS_ROLES] ${JSON.stringify({ guildId, members, roles })}`);
+        } catch (e) {
+          console.error(`[SYS] Failed to fetch members/roles for ${guildId}:`, e.message);
+          // Fallback to cache if available
+          const cached = memberRoleCache.get(guildId);
+          if (cached) {
+            console.log(`[SYS] [MEMBERS_ROLES] ${JSON.stringify({ guildId, members: cached.members, roles: cached.roles })}`);
+          }
+        }
+      })();
+    } else {
+      console.warn(`[SYS] LIST_MEMBERS_ROLES: Guild ${guildId} not found in cache.`);
     }
   }
 });

@@ -34,6 +34,7 @@ const state = {
   pingStats: { min: Infinity, max: -Infinity, sum: 0, count: 0 },
   charts: {},
   errors: [],
+  metadataCache: {}, // { guildId: { id: { type, name, avatar, color } } }
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -50,28 +51,34 @@ function safeFetch(url) {
 function now() { return new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
 
 // ── Navigation ─────────────────────────────────────────────────────────────────
-function setupNav() {
+function switchTab(tab) {
   const titles = {
     'tab-dashboard': 'Dashboard',
     'tab-logs':      'Server Logs',
     'tab-commands':  'Commands',
     'tab-account':   'Account',
   };
+  document.querySelectorAll('.nav-item').forEach(i => {
+    i.classList.toggle('active', i.dataset.tab === tab);
+  });
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.id === tab);
+  });
+  state.activeTab = tab;
+  el('page-title').textContent = titles[tab] || '';
+  if (tab === 'tab-logs') loadGuildList();
+}
+
+function setupNav() {
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', e => {
       e.preventDefault();
       const tab = item.dataset.tab;
-      if (!tab) return;
-      document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      item.classList.add('active');
-      const section = el(tab);
-      if (section) section.classList.add('active');
-      state.activeTab = tab;
-      el('page-title').textContent = titles[tab] || '';
-      if (tab === 'tab-logs') loadGuildList();
+      if (tab) switchTab(tab);
     });
   });
+  // Notification icon redirect
+  el('btn-notify')?.addEventListener('click', () => switchTab('tab-account'));
 }
 
 // ── Charts ─────────────────────────────────────────────────────────────────────
@@ -153,6 +160,14 @@ socket.on('connect', () => {
 socket.on('disconnect', () => {
   el('offline-overlay').classList.add('show');
   setPip('pip-bot', 'error');
+});
+
+socket.on('system_shutdown', () => {
+  showToast('⛔ System is shutting down. Closing tab...', 'error');
+  setTimeout(() => {
+    window.close();
+    window.location.href = 'about:blank'; // Fallback if window.close() is blocked
+  }, 2000);
 });
 
 function setPip(id, state) {
@@ -260,6 +275,20 @@ socket.on('log', (msg) => {
   // Error notification
   if (msg.type === 'err') {
     pushError(msg.text || msg.message);
+  }
+});
+
+socket.on('metadata_resolved', (data) => {
+  if (!state.metadataCache[data.guildId]) state.metadataCache[data.guildId] = {};
+  Object.assign(state.metadataCache[data.guildId], data.results);
+  
+  // Update UI chips if we are currently looking at this guild
+  if (state.selectedGuildId === data.guildId) {
+    Object.entries(data.results).forEach(([id, meta]) => {
+      document.querySelectorAll(`.perm-tag[data-id="${id}"]`).forEach(el => {
+        el.innerHTML = createTagInnerHtml(id, meta);
+      });
+    });
   }
 });
 
@@ -392,12 +421,14 @@ async function openGuildDetail(g) {
   // Load analytics
   loadDetailAnalytics(g.guild_id);
 
-  // Load config
-  if (g.settings || g.permissions) {
+  // Load config (Always re-fetch to ensure sync with Discord-side changes)
+  const meta = await safeFetch(`/api/guild-meta?guildId=${g.guild_id}`);
+  if (meta) {
+    g.settings = meta.settings || {};
+    g.permissions = meta.permissions || {};
+    renderConfig(g.settings, g.permissions);
+  } else if (g.settings || g.permissions) {
     renderConfig(g.settings || {}, g.permissions || {});
-  } else {
-    const meta = await safeFetch(`/api/guild-meta?guildId=${g.guild_id}`);
-    if (meta) renderConfig(meta.settings || {}, meta.permissions || {});
   }
 
   // Action buttons
@@ -429,10 +460,30 @@ async function openGuildDetail(g) {
       showToast('❌ ブロック状態の変更に失敗しました。', 'error');
     }
   };
+  el('btn-edit-perms').onclick = () => {
+    openPermModal(g.permissions || {});
+  };
   el('btn-leave-guild').onclick = () => {
     if (confirm(`本当に "${g.name}" から退出しますか？\nこの操作は取り消せません。`)) {
       socket.emit('leave_guild', { guildId: g.guild_id });
       showToast(`🚪 "${g.name}" からの退出を要求しました…`, 'pending');
+    }
+  };
+  el('btn-reset-perms').onclick = async () => {
+    if (!confirm(`⚠️ Are you sure you want to RESET ALL permissions for "${g.name}"?\nThis will delete all custom allow/deny rules.`)) return;
+    showToast('🗑 Resetting permissions...', 'pending');
+    try {
+      const res = await fetch('/api/permissions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guildId: g.guild_id, permissions: {} }) // Empty clears all
+      });
+      if (!res.ok) throw new Error('Reset failed');
+      showToast('✅ Permissions reset successfully!', 'ok');
+      g.permissions = {};
+      renderConfig(g.settings || {}, {});
+    } catch (err) {
+      showToast('❌ Failed to reset permissions.', 'error');
     }
   };
 }
@@ -565,156 +616,294 @@ function renderConfig(settings, permissions) {
   ).join('');
 
   const permObj = (permissions && Object.keys(permissions).length > 0) ? permissions : (settings.permissions || {});
-  state.currentPerms = JSON.parse(JSON.stringify(permObj)); // Deep copy for editing
+  state.currentPerms = JSON.parse(JSON.stringify(permObj));
 
   const permEntries = Object.entries(permObj);
   if (permEntries.length) {
-    permList.innerHTML = permEntries.map(([cmd, rules]) => {
-      const ruleText = Object.entries(rules).map(([id, act]) => {
-        const target = id === state.selectedGuildId ? '@everyone' : id;
-        return `${target}:${act}`;
-      }).join(', ');
-      return `<div class="config-row"><span>/${cmd}</span><span style="font-size:11px">${escHtml(ruleText)}</span></div>`;
-    }).join('');
-  } else {
-    permList.innerHTML = '<div class="config-row"><span colspan="2">No custom permissions</span></div>';
-  }
+    const categories = {
+      '🎮 Basic': [],
+      '🎙️ Voice Settings': [],
+      '🎵 Music & Sound': [],
+      '⚙️ Server Admin': [],
+      '📖 Dictionary & Customs': [],
+      '📦 Other': []
+    };
 
-  // Setup Edit button
-  el('btn-edit-perms').onclick = () => openPermModal(permObj);
+    const mapping = {
+      'join':'🎮 Basic', 'leave':'🎮 Basic', 'help':'🎮 Basic', 'mystatus':'🎮 Basic',
+      'setvoice':'🎙️ Voice Settings', 'voiceparams':'🎙️ Voice Settings', 'readname':'🎙️ Voice Settings', 'chatmode':'🎙️ Voice Settings', 'announce':'🎙️ Voice Settings',
+      'play':'🎵 Music & Sound', 'pause':'🎵 Music & Sound', 'skip':'🎵 Music & Sound', 'queue':'🎵 Music & Sound', 'lyrics':'🎵 Music & Sound', 'musicvolume':'🎵 Music & Sound', 'soundboard':'🎵 Music & Sound',
+      'setchannel':'⚙️ Server Admin', 'permissions':'⚙️ Server Admin', 'serverstatus':'⚙️ Server Admin', 'servervoice':'⚙️ Server Admin', 'servervoiceparams':'⚙️ Server Admin', 'cleanchat':'⚙️ Server Admin', 'trim':'⚙️ Server Admin',
+      'addword':'📖 Dictionary & Customs', 'delword':'📖 Dictionary & Customs', 'listwords':'📖 Dictionary & Customs', 'customsound':'📖 Dictionary & Customs', 'customemoji':'📖 Dictionary & Customs'
+    };
+
+    permEntries.forEach(([cmd, rules]) => {
+      const baseCmd = cmd.split(' ')[0];
+      const cat = mapping[baseCmd] || '📦 Other';
+      categories[cat].push([cmd, rules]);
+    });
+
+    permList.innerHTML = `<div class="config-perm-container"></div>`;
+    const container = permList.querySelector('.config-perm-container');
+    const resolveList = new Set();
+
+    Object.entries(categories).forEach(([catName, items]) => {
+      if (items.length === 0) return;
+
+      const catSection = document.createElement('div');
+      catSection.className = 'config-perm-category';
+      catSection.innerHTML = `<h4>${catName}</h4><div class="config-perm-grid"></div>`;
+      const grid = catSection.querySelector('.config-perm-grid');
+
+      items.forEach(([cmd, rules]) => {
+        const card = document.createElement('div');
+        card.className = 'perm-mini-card';
+        card.onclick = () => openPermModal(permObj, cmd);
+
+        const tagHtml = Object.entries(rules).map(([id, act]) => {
+          const isEveryone = id === state.selectedGuildId;
+          if (!isEveryone) resolveList.add(id);
+          const meta = state.metadataCache[state.selectedGuildId]?.[id];
+          return `<div class="perm-tag ${isEveryone ? 'everyone' : ''} ${act}" data-id="${id}">${isEveryone ? 'Everyone' : (meta ? createTagInnerHtml(id, meta) : `<span style="opacity:0.5">${id.slice(-4)}...</span>`)}</div>`;
+        }).join('');
+        card.innerHTML = `<div class="perm-mini-header"><code>/${cmd}</code></div><div class="perm-tag-list">${tagHtml}</div>`;
+        grid.appendChild(card);
+      });
+      container.appendChild(catSection);
+    });
+
+    if (resolveList.size > 0) {
+      const unknownIds = [...resolveList].filter(id => !state.metadataCache[state.selectedGuildId]?.[id]);
+      if (unknownIds.length > 0) {
+        fetch(`/api/resolve-metadata?guildId=${state.selectedGuildId}&ids=${unknownIds.join(',')}`).catch(() => {});
+      }
+    }
+  } else {
+    permList.innerHTML = '<div class="config-row"><span>No custom permissions</span></div>';
+  }
+}
+
+function createTagInnerHtml(id, meta) {
+  if (meta.type === 'role') {
+    return `<span class="role-dot" style="background:${meta.color || '#fff'}"></span>${escHtml(meta.name)}`;
+  } else if (meta.type === 'channel') {
+    return `<span style="color:var(--text-muted); font-weight:800; margin-right:4px;">#</span>${escHtml(meta.name)}`;
+  } else {
+    const avatar = meta.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png';
+    return `<img src="${avatar}" class="avatar-micro" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">${escHtml(meta.name)}`;
+  }
 }
 
 const ALL_COMMANDS = [
-  'join', 'leave', 'setchannel', 'setvoice', 'voiceparams', 
+  'join', 'leave', 'setchannel', 'setvoice', 'voiceparams',
   'voiceparams speed', 'voiceparams pitch', 'voiceparams volume',
-  'chatmode', 'soundboard', 'serverstatus', 'mystatus', 'help', 'voices', 'addword', 'delword', 
-  'listwords', 'readname', 'announce', 'cleanchat', 'trim', 'permissions', 'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume', 
+  'chatmode', 'soundboard', 'serverstatus', 'mystatus', 'help',
+  'addword', 'delword', 'listwords', 'readname', 'announce', 'cleanchat', 'trim',
+  'permissions', 'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume',
   'servervoice', 'servervoiceparams', 'servervoiceparams speed', 'servervoiceparams pitch', 'servervoiceparams volume',
-  'customsound add', 'customsound remove', 'customsound list', 'customemoji add', 'customemoji remove', 'customemoji list'
+  'customsound add', 'customsound remove', 'customsound list',
+  'customemoji add', 'customemoji remove', 'customemoji list', 'loop'
 ];
 
-// Global modal listeners
-el('btn-close-perms').onclick = () => el('perm-modal').style.display = 'none';
-el('btn-cancel-perms').onclick = () => el('perm-modal').style.display = 'none';
-el('btn-save-perms').onclick = savePermissions;
+// ── Permission Modal (Two-Panel Redesign) ──────────────────────────────────────
 
-function openPermModal(perms) {
-  const container = el('perm-command-list');
-  container.innerHTML = '';
-  state.editingPerms = JSON.parse(JSON.stringify(perms));
+// Guild member+role cache for the currently open guild
+let permModalMembers = [];
+let permModalRoles   = [];
+let permActivePtab   = 'members'; // 'members' | 'roles'
 
-  ALL_COMMANDS.forEach(cmd => {
-    const group = createCommandGroup(cmd, perms[cmd] || {});
-    container.appendChild(group);
-  });
+function openPermModal(perms, focusCmd) {
+  state.editingPerms = JSON.parse(JSON.stringify(perms || {}));
+  state.selectedPermCmd = focusCmd || null;
 
-  el('perm-search').value = '';
-  updatePermSearch();
+  // Reset picker tab
+  permActivePtab = 'members';
+  document.querySelectorAll('.perm-ptab').forEach(t => t.classList.toggle('active', t.dataset.ptab === 'members'));
+  el('perm-members-grid').style.display = '';
+  el('perm-roles-grid').style.display = 'none';
+
+  renderPermCmdList();
+  renderPickerGrid();
+  updateSelectedCmdLabel();
+
   el('perm-modal').style.display = 'flex';
+
+  // Load members/roles from bot (async – updates grids when ready)
+  if (state.selectedGuildId) {
+    permModalMembers = [];
+    permModalRoles   = [];
+    fetch(`/api/guild-members-roles?guildId=${state.selectedGuildId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data && Array.isArray(data.members)) permModalMembers = data.members;
+        if (data && Array.isArray(data.roles))   permModalRoles   = data.roles;
+        renderPickerGrid();
+      })
+      .catch(() => {});
+  }
+
+  // If a command was pre-focused, scroll it into view
+  if (focusCmd) {
+    setTimeout(() => {
+      const row = document.querySelector(`.perm-cmd-row[data-cmd="${CSS.escape(focusCmd)}"]`);
+      row?.scrollIntoView({ block: 'nearest' });
+    }, 50);
+  }
 }
 
-function createCommandGroup(cmd, rules) {
-  const group = document.createElement('div');
-  group.className = 'card cmd-perm-group';
-  group.dataset.cmd = cmd;
-  group.style.cssText = 'padding:14px; gap:10px; border-color:rgba(0,0,0,0.05);';
-
-  const everyoneRule = rules[state.selectedGuildId] || 'allow';
-  const exceptions = Object.entries(rules).filter(([id]) => id !== state.selectedGuildId);
-
-  group.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-      <div style="display:flex; align-items:center; gap:8px;">
-        <code style="font-size:14px; color:var(--accent); background:var(--bg); padding:2px 8px; border-radius:6px;">/${cmd}</code>
-      </div>
-      <div style="display:flex; align-items:center; gap:10px;">
-        <span style="font-size:11px; font-weight:700; color:var(--text-muted);">Everyone:</span>
-        <button class="restrict-toggle ${everyoneRule === 'allow' ? 'allowed' : 'denied'}" onclick="toggleEveryone(this)">
-          ${everyoneRule === 'allow' ? '✅ Allowed' : '🚫 Denied'}
-        </button>
-      </div>
-    </div>
-    <div class="perm-exceptions" style="display:flex; flex-direction:column; gap:6px; margin-top:8px; border-top:1px dashed var(--border); padding-top:8px;">
-      ${exceptions.map(([id, act]) => createExceptionHtml(id, act)).join('')}
-    </div>
-    <button class="action-btn secondary" style="width:100%; padding:6px; font-size:11px; margin-top:4px;" onclick="addPermException(this)">+ Add ID Exception</button>
-  `;
-  return group;
-}
-
-function createExceptionHtml(id, act) {
-  return `
-    <div class="exception-row" style="display:flex; gap:8px; align-items:center;">
-      <input type="text" class="exc-id" value="${id}" placeholder="Role/User ID" style="flex:1; padding:4px 8px; border-radius:6px; border:1px solid var(--border); font-size:11px; background:var(--bg)">
-      <select class="exc-act" style="padding:4px; border-radius:6px; border:1px solid var(--border); font-size:11px; background:var(--bg)">
-        <option value="allow" ${act === 'allow' ? 'selected' : ''}>Allow</option>
-        <option value="deny" ${act === 'deny' ? 'selected' : ''}>Deny</option>
-      </select>
-      <button class="modal-close" style="font-size:14px; padding:0" onclick="this.parentElement.remove()">&times;</button>
-    </div>
-  `;
-}
-
-function toggleEveryone(btn) {
-  const isAllowed = btn.classList.contains('allowed');
-  btn.classList.toggle('allowed', !isAllowed);
-  btn.classList.toggle('denied', isAllowed);
-  btn.textContent = isAllowed ? '🚫 Denied' : '✅ Allowed';
-}
-
-function addPermException(btn) {
-  const list = btn.previousElementSibling;
-  const div = document.createElement('div');
-  div.innerHTML = createExceptionHtml('', 'allow');
-  list.appendChild(div.firstElementChild);
-}
-
-function updatePermSearch() {
-  const q = el('perm-search').value.toLowerCase();
-  document.querySelectorAll('.cmd-perm-group').forEach(group => {
-    const cmd = group.dataset.cmd;
-    group.style.display = cmd.includes(q) ? 'flex' : 'none';
+function renderPermCmdList() {
+  const container = el('perm-cmd-list');
+  if (!container) return;
+  const q = (el('perm-cmd-search')?.value || '').toLowerCase();
+  container.innerHTML = '';
+  ALL_COMMANDS.filter(cmd => cmd.includes(q)).forEach(cmd => {
+    const rules = state.editingPerms[cmd] || {};
+    const ruleCount = Object.keys(rules).length;
+    const row = document.createElement('div');
+    row.className = 'perm-cmd-row' + (state.selectedPermCmd === cmd ? ' active' : '');
+    row.dataset.cmd = cmd;
+    row.innerHTML = `
+      <span>/${cmd}</span>
+      <span class="perm-rule-badge${ruleCount ? ' has-rules' : ''}">${ruleCount || '—'}</span>
+    `;
+    row.addEventListener('click', () => {
+      state.selectedPermCmd = cmd;
+      renderPermCmdList();
+      renderPickerGrid();
+      updateSelectedCmdLabel();
+    });
+    container.appendChild(row);
   });
 }
-el('perm-search').oninput = updatePermSearch;
 
-async function savePermissions() {
-  const newPerms = {};
-  document.querySelectorAll('.cmd-perm-group').forEach(group => {
-    const cmd = group.dataset.cmd;
-    const everyoneBtn = group.querySelector('.restrict-toggle');
-    const everyoneAct = everyoneBtn.classList.contains('allowed') ? 'allow' : 'deny';
-    
-    const rules = {};
-    rules[state.selectedGuildId] = everyoneAct;
+function updateSelectedCmdLabel() {
+  const label = el('perm-selected-cmd-label');
+  const bulk  = el('perm-bulk-actions');
+  if (!label || !bulk) return;
+  if (state.selectedPermCmd) {
+    label.textContent = `Editing: /${state.selectedPermCmd}`;
+    label.classList.add('active');
+    bulk.style.display = 'flex';
+  } else {
+    label.textContent = '← Select a command';
+    label.classList.remove('active');
+    bulk.style.display = 'none';
+  }
+}
 
-    group.querySelectorAll('.exception-row').forEach(row => {
-      const id = row.querySelector('.exc-id').value.trim();
-      const act = row.querySelector('.exc-act').value;
-      if (id) rules[id] = act;
+function renderPickerGrid() {
+  const q = (el('perm-picker-search')?.value || '').toLowerCase();
+  renderEntityGrid('members', permModalMembers.filter(m => m.name.toLowerCase().includes(q)));
+  renderEntityGrid('roles',   permModalRoles.filter(r => r.name.toLowerCase().includes(q)));
+}
+
+function renderEntityGrid(type, items) {
+  const gridId = type === 'members' ? 'perm-members-grid' : 'perm-roles-grid';
+  const grid = el(gridId);
+  if (!grid) return;
+
+  if (items.length === 0) {
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);font-size:13px;padding:24px;">${state.selectedGuildId ? (permModalMembers.length === 0 && type === 'members' ? 'Loading…' : 'No results') : 'Select a server first'}</div>`;
+    return;
+  }
+
+  grid.innerHTML = '';
+  items.forEach(item => {
+    const id = item.id;
+    const cmd = state.selectedPermCmd;
+    const currentState = cmd ? (state.editingPerms[cmd]?.[id] || null) : null;
+
+    const card = document.createElement('div');
+    card.className = 'perm-entity-card' + (currentState === 'allow' ? ' state-allow' : currentState === 'deny' ? ' state-deny' : '');
+    card.title = currentState ? `${item.name}: ${currentState}` : item.name;
+
+    let avatarHtml;
+    if (type === 'members') {
+      avatarHtml = `<img src="${item.avatar}" class="perm-entity-avatar" alt="" onerror="this.style.display='none'">`;
+    } else {
+      // Role: colored circle with first letter
+      const color = item.color && item.color !== '#000000' ? item.color : '#7551ff';
+      avatarHtml = `<div class="perm-entity-avatar role-av" style="background:${color}">${escHtml(item.name[0]?.toUpperCase() || '?')}</div>`;
+    }
+
+    const stateLabel = currentState === 'allow' ? 'Allow' : currentState === 'deny' ? 'Deny' : 'None';
+    const stateClass = currentState === 'allow' ? 'st-allow' : currentState === 'deny' ? 'st-deny' : 'st-none';
+
+    card.innerHTML = `
+      ${avatarHtml}
+      <div class="perm-entity-name">${escHtml(item.name)}</div>
+      <div class="perm-entity-state ${stateClass}">${stateLabel}</div>
+    `;
+
+    card.addEventListener('click', () => {
+      if (!state.selectedPermCmd) {
+        showToast('← First select a command on the left', 'pending');
+        return;
+      }
+      // Cycle: none → allow → deny → none
+      const cur = state.editingPerms[state.selectedPermCmd]?.[id] || null;
+      if (!state.editingPerms[state.selectedPermCmd]) state.editingPerms[state.selectedPermCmd] = {};
+      if (cur === null)    state.editingPerms[state.selectedPermCmd][id] = 'allow';
+      else if (cur === 'allow') state.editingPerms[state.selectedPermCmd][id] = 'deny';
+      else {
+        // none — remove rule
+        delete state.editingPerms[state.selectedPermCmd][id];
+        if (Object.keys(state.editingPerms[state.selectedPermCmd]).length === 0) {
+          delete state.editingPerms[state.selectedPermCmd];
+        }
+      }
+      renderPermCmdList();
+      renderPickerGrid();
     });
 
-    // Only save if not the default (all allowed)
-    const isDefault = everyoneAct === 'allow' && Object.keys(rules).length === 1;
-    if (!isDefault) {
-      newPerms[cmd] = rules;
-    }
+    grid.appendChild(card);
   });
+}
 
+// Picker tab switching
+document.querySelectorAll('.perm-ptab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    permActivePtab = tab.dataset.ptab;
+    document.querySelectorAll('.perm-ptab').forEach(t => t.classList.toggle('active', t === tab));
+    el('perm-members-grid').style.display = permActivePtab === 'members' ? '' : 'none';
+    el('perm-roles-grid').style.display   = permActivePtab === 'roles'   ? '' : 'none';
+  });
+});
+
+el('perm-cmd-search').oninput   = renderPermCmdList;
+el('perm-picker-search').oninput = renderPickerGrid;
+
+el('btn-close-perms').onclick  = () => el('perm-modal').style.display = 'none';
+el('btn-cancel-perms').onclick = () => el('perm-modal').style.display = 'none';
+el('btn-save-perms').onclick   = savePermissions;
+
+el('btn-perm-allow-all').onclick = () => setBulkPermission('allow');
+el('btn-perm-deny-all').onclick  = () => setBulkPermission('deny');
+
+function setBulkPermission(action) {
+  if (!state.selectedPermCmd || !state.selectedGuildId) return;
+  state.editingPerms[state.selectedPermCmd] = { [state.selectedGuildId]: action };
+  renderPermCmdList();
+  renderPickerGrid();
+  showToast(`✅ Set /${state.selectedPermCmd} to ${action} all`, 'ok');
+}
+
+async function savePermissions() {
   showToast('💾 Saving permissions...', 'pending');
   try {
     const res = await fetch('/api/permissions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guildId: state.selectedGuildId, permissions: newPerms })
+      body: JSON.stringify({ guildId: state.selectedGuildId, permissions: state.editingPerms })
     });
     if (!res.ok) throw new Error('Save failed');
     showToast('✅ Permissions updated!', 'ok');
     el('perm-modal').style.display = 'none';
-    
+
     const dg = state.dbGuilds.find(g => g.guild_id === state.selectedGuildId);
-    if (dg) dg.permissions = newPerms;
-    renderConfig(dg.settings || {}, newPerms);
+
+    if (dg) dg.permissions = state.editingPerms;
+    renderConfig(dg.settings || {}, state.editingPerms);
   } catch (err) {
     showToast('❌ Failed to save permissions.', 'error');
   }
@@ -739,7 +928,21 @@ function pushError(msg) {
 }
 
 // ── Control Buttons ───────────────────────────────────────────────────────────
-el('btn-restart')?.addEventListener('click', () => { socket.emit('restart_bot'); showToast('↺ Restart requested…', 'pending'); });
+el('btn-restart')?.addEventListener('click', () => {
+  if (confirm('Restart the bot ecosystem? This will also clear the current error dashboard.')) {
+    socket.emit('restart_bot');
+    // Clear local error state
+    state.errors = [];
+    const badge = el('notif-badge');
+    if (badge) { badge.textContent = '0'; badge.style.display = 'none'; }
+    const list = el('notif-list');
+    if (list) {
+      list.innerHTML = '<p class="notif-empty">No errors recorded.</p>';
+    }
+    el('kpi-errors').textContent = '0';
+    showToast('↺ Restarting & Clearing logs…', 'pending');
+  }
+});
 el('btn-stop')?.addEventListener('click',    () => { socket.emit('stop_bot');    showToast('⏹ Stop requested…', 'pending'); });
 el('btn-kill-all')?.addEventListener('click',() => { if(confirm('Kill all services?')) { socket.emit('kill_all'); showToast('⏻ Shutting down…', 'pending'); } });
 

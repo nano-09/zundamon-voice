@@ -184,6 +184,7 @@
               <button class="ltab" data-ltab="bot">Bot Log</button>
               <button class="ltab" data-ltab="sys">System Log</button>
               <button class="ltab" data-ltab="err">Errors</button>
+              <button class="ltab" data-ltab="assets">Assets</button>
               <button class="ltab" data-ltab="config">Config</button>
             </div>
 
@@ -220,18 +221,42 @@
 
             <!-- Config Pane -->
             <div class="lpane" id="lpane-config">
-              <div class="config-grid">
-                <div>
-                  <h3>Server Information</h3>
-                  <div class="config-list" id="config-info-list"></div>
-                </div>
-                <div>
-                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                    <h3 style="margin-bottom:0">Command Permissions</h3>
-                    <button class="action-btn secondary" id="btn-edit-perms" style="padding:4px 10px; font-size:11px">⚙️ Manage</button>
+              <div class="config-pane-wrap">
+                <section>
+                  <div class="config-section-head">
+                    <h3>Server Information</h3>
                   </div>
-                  <div class="config-list" id="config-perm-list"></div>
-                </div>
+                  <div class="config-info-grid" id="config-info-list"></div>
+                </section>
+
+                <section>
+                  <div class="config-section-head">
+                    <h3>Command Permissions</h3>
+                    <div class="config-actions">
+                      <button class="action-btn primary btn-sm" id="btn-edit-perms">Edit Permissions</button>
+                      <button class="action-btn danger btn-sm" id="btn-reset-perms">Reset All Permissions</button>
+                    </div>
+                  </div>
+                  <div id="config-perm-list"></div>
+                </section>
+              </div>
+            </div>
+
+            <!-- Assets Pane -->
+            <div class="lpane" id="lpane-assets">
+              <div class="config-pane-wrap">
+                <section>
+                  <div class="config-section-head">
+                    <h3>📢 Custom Soundboard</h3>
+                  </div>
+                  <div class="asset-grid" id="asset-sounds-list"></div>
+                </section>
+                <section>
+                  <div class="config-section-head">
+                    <h3>✨ Custom Emojis</h3>
+                  </div>
+                  <div class="asset-grid" id="asset-emojis-list"></div>
+                </section>
               </div>
             </div>
           </div>
@@ -242,16 +267,12 @@
 
     <!-- ── COMMANDS TAB ── -->
     <section id="tab-commands" class="tab">
-      <div class="commands-grid">
+      <div class="commands-page-grid">
         <div class="cmd-group">
           <h3>🎮 Basic</h3>
           <div class="cmd-list">
             <div class="cmd-row"><code>/join</code><span>Join your voice channel</span></div>
             <div class="cmd-row"><code>/leave</code><span>Leave voice channel</span></div>
-            <div class="cmd-row"><code>/setchannel</code><span>Set TTS text channel</span></div>
-            <div class="cmd-row"><code>/serverstatus</code><span>Show server config</span></div>
-            <div class="cmd-row"><code>/mystatus</code><span>Show your voice settings</span></div>
-            <div class="cmd-row"><code>/help</code><span>Show commands in Discord</span></div>
           </div>
         </div>
         <div class="cmd-group">
@@ -261,7 +282,6 @@
             <div class="cmd-row"><code>/voiceparams</code><span>Personal Speed / Pitch / Volume</span></div>
             <div class="cmd-row"><code>/servervoice</code><span>Set Server Default Voice</span></div>
             <div class="cmd-row"><code>/servervoiceparams</code><span>Server Default Params</span></div>
-            <div class="cmd-row"><code>/voices</code><span>List available speakers</span></div>
             <div class="cmd-row"><code>/readname</code><span>Toggle name reading</span></div>
             <div class="cmd-row"><code>/announce</code><span>Toggle join/leave alerts</span></div>
             <div class="cmd-row"><code>/trim</code><span>Max TTS length</span></div>
@@ -348,28 +368,55 @@
   </div>
 </div>
 
-<!-- Permission Modal -->
+<!-- Permission Modal (two-panel: command list left, member/role picker right) -->
 <div class="modal-overlay" id="perm-modal" style="display:none">
-  <div class="modal-card" style="width:600px; max-height:85vh; display:flex; flex-direction:column;">
+  <div class="modal-card perm-modal-card">
     <div class="modal-header">
-      <div style="display:flex; align-items:center; gap:12px;">
-        <h2 style="margin:0">Command Permissions</h2>
-        <input type="text" id="perm-search" placeholder="Filter commands..." style="padding:6px 12px; border-radius:10px; border:1px solid var(--border); font-size:12px; font-family:inherit; min-width:200px;">
-      </div>
+      <h2>⚙️ Command Permissions</h2>
       <button class="modal-close" id="btn-close-perms">&times;</button>
     </div>
-    
-    <div id="perm-editor-container" style="flex:1; overflow-y:auto; padding:4px 0;">
-      <!-- Command groups populated by JS -->
-      <div id="perm-command-list" style="display:flex; flex-direction:column; gap:16px;"></div>
+
+    <div class="perm-modal-body">
+      <!-- LEFT: Command list -->
+      <div class="perm-cmd-panel">
+        <div class="perm-panel-head">
+          <span class="perm-panel-label">Commands</span>
+          <input type="text" id="perm-cmd-search" class="perm-search-input" placeholder="Search commands…">
+        </div>
+        <div id="perm-cmd-list" class="perm-cmd-list"></div>
+      </div>
+
+      <!-- RIGHT: Member / Role picker -->
+      <div class="perm-picker-panel">
+        <div class="perm-panel-head">
+          <div class="perm-picker-tabs">
+            <button class="perm-ptab active" data-ptab="members">Members</button>
+            <button class="perm-ptab" data-ptab="roles">Roles</button>
+          </div>
+          <input type="text" id="perm-picker-search" class="perm-search-input" placeholder="Search…">
+        </div>
+        <!-- Selected command indicator -->
+        <div class="perm-selected-row">
+          <div id="perm-selected-cmd-label" class="perm-selected-label">← Select a command</div>
+          <div id="perm-bulk-actions" class="perm-bulk-actions" style="display:none">
+            <button class="action-btn ok btn-xs" id="btn-perm-allow-all">Allow All</button>
+            <button class="action-btn danger btn-xs" id="btn-perm-deny-all">Deny All</button>
+          </div>
+        </div>
+        <!-- Member cards -->
+        <div id="perm-members-grid" class="perm-entity-grid"></div>
+        <!-- Role cards -->
+        <div id="perm-roles-grid" class="perm-entity-grid" style="display:none"></div>
+      </div>
     </div>
 
-    <div style="display:flex; gap:10px; justify-content:flex-end; border-top:1px solid var(--border); padding-top:20px; margin-top:10px;">
+    <div class="perm-modal-footer">
       <button class="action-btn secondary" id="btn-cancel-perms">Cancel</button>
       <button class="action-btn primary" id="btn-save-perms">Save All Changes</button>
     </div>
   </div>
 </div>
+
 
 <script src="script.js"></script>
 </body>

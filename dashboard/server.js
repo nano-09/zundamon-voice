@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import { spawn, exec } from 'child_process';
 import path from 'path';
 import os from 'os';
+import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
@@ -57,6 +58,8 @@ app.get('/api/guild-meta', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
 
 // Fetch command usage analytics
 app.get('/api/usage', async (req, res) => {
@@ -112,6 +115,38 @@ app.get('/api/guilds', async (req, res) => {
     console.error('[API] /api/guilds error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Fetch guild members + roles (proxied via bot IPC)
+app.get('/api/guild-members-roles', async (req, res) => {
+  const { guildId } = req.query;
+  if (!guildId) return res.status(400).json({ error: 'guildId required' });
+  if (!botProcess || !botProcess.stdin.writable) {
+    return res.status(503).json({ error: 'Bot process not running.' });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingMembersRoles.delete(guildId);
+      res.status(504).json({ error: 'Bot did not respond in time.' });
+      resolve();
+    }, 6000);
+    pendingMembersRoles.set(guildId, {
+      resolve: (data) => { res.json(data); resolve(); },
+      timeout,
+    });
+    botProcess.stdin.write(`LIST_MEMBERS_ROLES:${guildId}\n`);
+  });
+});
+
+// Resolve role/channel/user metadata (via bot IPC)
+app.get('/api/resolve-metadata', async (req, res) => {
+  const { guildId, ids } = req.query;
+  if (!guildId || !ids) return res.status(400).json({ error: 'Missing guildId or ids' });
+  if (botProcess && botProcess.stdin.writable) {
+    botProcess.stdin.write(`RESOLVE_METADATA:${guildId}:${ids}\n`);
+    return res.json({ ok: true });
+  }
+  res.status(503).json({ error: 'Bot not running' });
 });
 
 // Save permissions for a guild
@@ -181,6 +216,8 @@ app.get('/api/analytics', async (req, res) => {
 });
 
 let botProcess = null;
+// Pending one-shot callbacks for LIST_MEMBERS_ROLES responses
+const pendingMembersRoles = new Map(); // guildId -> { resolve, timeout }
 let latestBotStats = { guilds: '-', channels: '-', ping: '-', uptime: '-', user: null };
 let messageCount = 0;
 
@@ -224,9 +261,10 @@ function startBot() {
   const projectRoot = path.join(__dirname, '..');
   botProcess = spawn('node', ['src/index.js'], { cwd: projectRoot });
 
-  botProcess.stdout.on('data', (data) => {
-    // Decode as UTF-8, strip unreadable non-ASCII control chars for display
-    const text = data.toString('utf8');
+  const rl = readline.createInterface({ input: botProcess.stdout, terminal: false });
+
+  rl.on('line', (text) => {
+    // Strip unreadable non-ASCII control chars for display
     const clean = text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '').trim();
     if (!clean) return;
     console.log('[BOT]', clean);
@@ -250,14 +288,36 @@ function startBot() {
       } catch (e) {}
     }
 
+    if (cleanText.includes('[METADATA]')) {
+      try {
+        const mdata = JSON.parse(cleanText.split('[METADATA]')[1].trim());
+        io.emit('metadata_resolved', mdata);
+      } catch (e) {}
+    }
+
+    if (cleanText.includes('[MEMBERS_ROLES]')) {
+      try {
+        const payload = JSON.parse(cleanText.split('[MEMBERS_ROLES]')[1].trim());
+        io.emit('members_roles_resolved', payload);
+        const pending = pendingMembersRoles.get(payload.guildId);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          pendingMembersRoles.delete(payload.guildId);
+          pending.resolve(payload);
+        }
+      } catch (e) {
+        console.error('[DASHBOARD] Failed to parse [MEMBERS_ROLES]:', e.message);
+      }
+    }
+
     if (cleanText.includes('[GUILD_ADDED]')) {
-      const guildId = cleanText.split('[GUILD_ADDED]')[1].trim();
-      io.emit('guild_added', { guildId });
+      const gId = cleanText.split('[GUILD_ADDED]')[1].trim();
+      io.emit('guild_added', { guildId: gId });
     }
 
     if (cleanText.includes('[GUILD_REMOVED]')) {
-      const guildId = cleanText.split('[GUILD_REMOVED]')[1].trim();
-      io.emit('guild_removed', { guildId });
+      const gId = cleanText.split('[GUILD_REMOVED]')[1].trim();
+      io.emit('guild_removed', { guildId: gId });
     }
   });
 
@@ -271,6 +331,7 @@ function startBot() {
   botProcess.on('close', (code) => {
     io.emit('log', { text: `[SYS] Bot exited code ${code}`, type: 'sys' });
     botProcess = null;
+    io.emit('stats_update', { type: 'HEARTBEAT', status: 'Idle', guilds: 0, uptime: 0, ping: 0 }); // Clear stats
   });
 }
 
@@ -318,6 +379,7 @@ io.on('connection', (socket) => {
     stopBot();
   });
   socket.on('kill_all', () => {
+    io.emit('system_shutdown');
     io.emit('action_response', { action: 'kill_all', status: 'pending', message: '⏻ Shutting down ecosystem...' });
     spawn('cmd.exe', ['/c', 'ShutdownZundamon.bat'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
     setTimeout(() => process.exit(0), 1500);

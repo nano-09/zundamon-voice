@@ -4,14 +4,16 @@
 import 'dotenv/config';
 import { pipeline } from '@xenova/transformers';
 import olla from 'ollama'; // Keep the original spelling in case
-import ollama from 'ollama';
 import { saveMessage, getRecentHistory } from './db.js';
 import { getGuildConfig } from './config.js';
 import { initMcpClient, callMcpTool } from './mcpClient.js';
 import { logToSupabase } from './db_supabase.js';
+import { getBotConfig } from './botConfig.js';
+import { Ollama } from 'ollama';
 
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = getBotConfig('OLLAMA_MODEL', 'qwen2.5:7b');
+const OLLAMA_URL = getBotConfig('OLLAMA_URL', 'http://localhost:11434');
+const ollama = new Ollama({ host: OLLAMA_URL });
 const activeGuildControllers = new Map();
 
 export function cancelAiGeneration(guildId) {

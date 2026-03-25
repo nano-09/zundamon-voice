@@ -1,1 +1,1 @@
-add custom emoji and sound board to be visible in the dashboard
+add custom emoji and soundboard to be visible in the dashboard
