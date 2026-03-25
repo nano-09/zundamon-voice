@@ -1,26 +1,87 @@
 # zundamon-voice 🟢
 
-Discord のテキストチャンネルのメッセージを、**ずんだもん**（VOICEVOX）の声でボイスチャンネルに読み上げる Bot です。
+Discordのボイスチャンネルで**ずんだもん**と直接おしゃべりしたり、テキストチャンネルのメッセージを読み上げたりできる AI Discord Bot です。
+
+6GB VRAM 環境でも快適に動作するように最適化済み。Ollama（ローカルLLM）、Whisper（音声認識）、VOICEVOX（音声合成）、MCP Web検索を組み合わせ、ずんだもんのキャラクターを完全に保った自然な会話を実現しています。
+
+---
+
+## 🎯 できること
+
+| 機能 | 説明 |
+|------|------|
+| 🗣️ テキスト読み上げ | テキストチャンネルのメッセージをずんだもんの声で読み上げ |
+| 🤖 AI音声会話 | ボイスチャンネルで話しかけると、ずんだもんがAIで考えて声で返事 |
+| 🌐 Web検索 (MCP) | MCP open-websearch で最新のネット情報を検索して回答 |
+| 🎤 ユーザー別の声設定 | ユーザーごとに話者IDと音声パラメータ（速度・ピッチ・音量）を記憶 |
+| 📖 音声認識の辞書補正 | Whisperが誤認識するゲーム名や固有名詞を自動修正 |
+| 🧹 自動チャット削除 | 指定した時間ごとにチャンネルのメッセージを自動クリーンアップ |
+| 😭 絵文字の読み上げ | 絵文字を日本語の感情表現に変換して読み上げ |
+| 🎵 カラオケモード | YouTubeから音楽を再生・歌詞表示。`/play` で自動オン、終了で自動オフ |
+| 🔊 サウンドボード | `/soundboard` でオンオフ。キーワードに反応してサウンドを再生 |
+| 📊 Premium Dashboard | モダンスタイルな管理画面でBotの状態、リソース、統計をリアルタイム監視 |
+| 🔒 セキュリティ管理 | 新規サーバー参加時の2FA（DM認証）とコマンドごとのロール権限設定 |
+| 🔥 ワンクリック起動/終了 | `.exe` で全サービスを一括起動、ボタン一つで一括終了 |
 
 ---
 
 ## 📋 必要なもの
 
-| 要件 | 詳細 |
-|------|------|
-| **Node.js** | v18 以上 |
-| **VOICEVOX Engine** | ローカルで起動 (port 50021) → [ダウンロード](https://voicevox.hiroshiba.jp/) |
-| **Discord Bot Token** | [Developer Portal](https://discord.com/developers/applications) で取得 |
-| **ffmpeg** | `ffmpeg-static` npm パッケージに同梱されています |
+| ソフトウェア | 用途 | ダウンロード |
+|-------------|------|-------------|
+| **Node.js** v18+ | ボット本体 | [nodejs.org](https://nodejs.org/) |
+| **Ollama** | ローカルAI (LLM) | [ollama.com](https://ollama.com/) |
+| **VOICEVOX** | ずんだもんの声合成 | [voicevox.hiroshiba.jp](https://voicevox.hiroshiba.jp/) |
+| **yt-dlp** | YouTube音楽再生 | [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp/releases) |
+| **Discord Bot Token** | Bot認証 | [Developer Portal](https://discord.com/developers/applications) |
 
-> **「Message Content Intent」を有効にしてください！**  
-> Developer Portal → Bot → Privileged Gateway Intents → **Message Content Intent** をオン
+> ⚠️ Developer Portal → 対象のBot → **Privileged Gateway Intents** → **Message Content Intent** を必ずオンにしてください。
 
 ---
 
-## ⚙️ セットアップ
+## 🚀 セットアップ手順
 
-### 1. リポジトリをクローン & 依存関係をインストール
+### Step 0: Discord Bot の作成とトークン取得
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) にアクセスし、Discordアカウントでログインする。
+2. 右上の **「New Application」** をクリックし、名前を付けて（例: `ずんだもん`）作成する。
+3. 左メニューの **「Bot」** をクリックし、**「Reset Token」** ボタンでトークンを生成する。
+4. 表示されたトークン文字列を **コピーして安全な場所に保存** する（これが `.env` の `DISCORD_TOKEN` に入る）。
+5. 同じBot画面の **「Privileged Gateway Intents」** セクションで以下を **全てオン** にする：
+   - ✅ **Presence Intent**
+   - ✅ **Server Members Intent**
+   - ✅ **Message Content Intent** ← これが一番重要！
+
+#### 🔗 BotをDiscordサーバーに招待する
+
+1. 左メニューの **「OAuth2」** をクリック。
+2. **「OAuth2 URL Generator」** セクションで、SCOPES から **`bot`** と **`applications.commands`** にチェック。
+3. 下に表示される BOT PERMISSIONS から以下にチェック：
+   - ✅ Send Messages
+   - ✅ Manage Messages（`/cleanchat` に必要）
+   - ✅ Read Message History
+   - ✅ Connect（ボイスチャンネル参加）
+   - ✅ Speak（ボイスチャンネル発話）
+   - ✅ Use Voice Activity
+4. ページ下部に生成された **招待URL** をコピーしてブラウザで開き、サーバーを選んで招待する。
+
+> 💡 `CLIENT_ID` は左メニュー「General Information」の **Application ID** です。これを `.env` の `CLIENT_ID=` に入力してください。
+
+---
+
+### Step 1: 外部ツールの準備
+
+```bash
+# Ollamaインストール後、AIモデルをダウンロード (約4.7GB, 6GB VRAMで動作)
+ollama pull qwen2.5:7b
+```
+
+**yt-dlp** をインストールし、パス（PATH）が通っていることを確認する。
+VOICEVOXはインストールするだけでOK。起動はランチャーが自動で行います。
+
+---
+
+### Step 2: Botのインストール
 
 ```bash
 git clone https://github.com/<あなたのユーザー名>/zundamon-voice.git
@@ -28,80 +89,207 @@ cd zundamon-voice
 npm install
 ```
 
-### 2. `.env` ファイルを作成
+---
 
-`.env.example` をコピーして編集します：
+### Step 3: 環境変数の設定
 
 ```bash
 cp .env.example .env
 ```
 
+`.env` を開いて以下を記入：
+
 ```env
-DISCORD_TOKEN=your_bot_token_here
-CLIENT_ID=your_application_client_id_here
+# ── Required ─────────────────────────────────────
+DISCORD_TOKEN=あなたのBotトークン
+CLIENT_ID=あなたのアプリケーションID
+
+# Bot Owner Discord User ID (for 2FA server authorization DMs)
+OWNER_DISCORD_ID=あなたのDiscordユーザーID
+
+# Bot Owner Email (for 2FA OTP)
+OWNER_EMAIL=あなたのメールアドレス
+
+# ── Email Settings (Required for bot to send 2FA codes) ──
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USER=あなたのメールアドレス
+SMTP_PASS=アプリパスワード
+
+# ── Ollama (Required for AI Chat Mode) ───────────
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:7b
+
+# ── VOICEVOX (Required for TTS) ──────────────────
 VOICEVOX_URL=http://localhost:50021
-VOICEVOX_SPEAKER=3   # 3 = ずんだもん (ノーマル)
+# Speaker IDs: 3=ノーマル, 1=あまあま, 5=セクシー, 7=ツンツン
+VOICEVOX_SPEAKER=3
+
+# ── Supabase (Required for conversation memory) ──
+SUPABASE_URL=あなたのSupabase URL
+SUPABASE_KEY=あなたのSupabase Key
 ```
 
-**CLIENT_ID** は Developer Portal のアプリケーション画面で確認できます。
-
-### 3. VOICEVOX Engine を起動
-
-VOICEVOX アプリを起動するか、VOICEVOX Engine を単体で起動してください（デフォルトで port 50021 に立ち上がります）。
-
-### 4. Bot を起動
-
-```bash
-npm start
-```
-
-コンソールに `✅ ログイン成功: BotName#XXXX` と表示されれば成功です。  
-スラッシュコマンドは初回起動時に自動登録されます（`CLIENT_ID` が設定されている場合）。
+> 🔒 **サーバー追加時の2FA認証について**:
+> `OWNER_DISCORD_ID` を設定しておくと、Botが新しいサーバーに参加した際にオーナーのDM宛に認証リンクが送付されます。リンクから承認することでそのサーバーでの利用が許可されます。
 
 ---
 
-## 🎮 使い方
+### Step 4: スラッシュコマンドの登録
+
+```bash
+node deploy-commands.js
+```
+
+---
+
+### Step 5: ランチャーの作成と起動
+
+```bash
+C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -out:StartZundamon.exe Launcher.cs
+```
+
+**`StartZundamon.exe`** をダブルクリックすると、以下が全自動で立ち上がります：
+
+1. ✅ Ollama
+2. ✅ VOICEVOX
+3. ✅ Web Dashboard & Discord Bot
+4. ✅ ブラウザでダッシュボード（`http://localhost:3000`）が自動で開く
+
+#### 終了方法
+- ダッシュボード上の 🔥 **SHUTDOWN ECOSYSTEM** ボタンをクリック
+- または `ShutdownZundamon.bat` を実行
+
+---
+
+## 🎮 コマンド一覧
+
+### 基本操作
+| コマンド | 説明 |
+|---------|------|
+| `/join` | ボイスチャンネルにずんだもんを呼ぶ |
+| `/leave` | ボイスチャンネルから退出 |
+| `/setchannel <チャンネル>` | テキスト読み上げの対象チャンネルを設定 |
+| `/serverstatus` | サーバーの設定と接続状態を確認 |
+| `/mystatus` | あなた個人の声の設定を確認 |
+| `/help` | コマンド一覧を表示 |
+
+### 声の設定 / サーバー設定
+| コマンド | 説明 |
+|---------|------|
+| `/setvoice <話者ID>` | 自分専用の声を設定（ユーザーごとに記憶） |
+| `/servervoice <ID>` | サーバー全体のデフォルトの声を指定 |
+| `/voices` | 利用可能な声のID一覧を表示 |
+| `/voiceparams [s] [p] [v]` | あなた専用の速度・ピッチ・音量を設定 |
+| `/servervoiceparams` | サーバー全体のデフォルト音声パラメータを指定 |
+| `/readname <True/False>` | 発言者の名前を読み上げるかどうか |
+| `/announce <True/False>` | ボイスチャンネルの入退室を読み上げるかどうか |
+| `/trim <文字数>` | 読み上げる最大文字数を設定（0=無効） |
+| `/soundboard <T/F>` | サウンドボードモード（キーワードSE）のオン/オフ |
+| `/customsound <add/rem/list>`| サーバー固有のサウンドボード音源を直接アップロード管理 |
+| `/customemoji <add/rem/list>`| サーバー固有の絵文字読み上げ（文字変換）辞書を管理 |
+
+### AI会話
+| コマンド | 説明 |
+|---------|------|
+| `/chatmode <True/False>` | AI音声会話モードのオン/オフ |
+
+### 音声認識の辞書機能
+| コマンド | 説明 |
+|---------|------|
+| `/addword <誤った言葉> <正しい言葉>` | Whisperの誤認識を修正する辞書を登録 |
+| `/delword <誤った言葉>` | 辞書からルールを削除 |
+| `/listwords` | 登録済みの辞書を一覧表示 |
+
+**使用例：** Whisperが「ホヨバース」と認識する → `/addword wrong:ホヨバース correct:HoYoverse` → 以後、正しいスペルで認識されるようになる
+
+### カラオケモード（音楽再生）
+> 🔸 カラオケモードは `/play` を使うと自動的にオンになり、キューが空になると自動的にオフに戻ります。
 
 | コマンド | 説明 |
 |---------|------|
-| `/join` | あなたのボイスチャンネルに Bot を呼ぶ |
-| `/setchannel #チャンネル` | 読み上げ対象のテキストチャンネルを設定 |
-| `/status` | 現在の接続・設定状況を確認 |
-| `/leave` | ボイスチャンネルから退出 |
+| `/play <URLまたは検索ワード>` | YouTubeから曲を再生予約（自動でカラオケモード移行） |
+| `/pause` | 再生中の曲を一時停止・再開 |
+| `/skip` | 現在の曲をスキップ |
+| `/queue` | 現在の再生キューを表示 |
+| `/lyrics` | 現在再生中の曲の歌詞を表示 |
+| `/musicvolume <音量>` | カラオケのBGM音量を設定（例: 0.5で半分） |
 
-### 手順
-
-1. ボイスチャンネルに参加する
-2. `/join` でBotを呼ぶ
-3. `/setchannel #テキストチャンネル` で読み上げチャンネルを設定
-4. そのテキストチャンネルに書き込むと Bot が読み上げます！
+### サーバー管理・権限 (管理用)
+| コマンド | 説明 |
+|---------|------|
+| `/cleanchat <分>` | 指定した分数ごとにメッセージを自動削除（0 = 無効化） |
+| `/permissions set <cmd> <role> <allow/deny>` | 指定コマンドに対するロール権限を設定（オーナー専用） |
+| `/permissions list` | 現在の権限ルール一覧を表示 |
+| `/permissions reset <cmd>` | 指定コマンドの権限ルールをリセット |
 
 ---
 
-## 🗣️ ずんだもん スピーカー ID 一覧
+## 🔊 サウンドボード＆カスタム絵文字
 
-| ID | スタイル |
-|----|--------|
-| `3` | ノーマル（デフォルト） |
-| `1` | あまあま |
-| `22` | ツンツン |
-| `38` | セクシー |
+Zundamonは各サーバーごとに独立したサウンドボード音源とカスタム絵文字を持てます！旧バージョンのようにローカルの `soundboard.json` をいじる必要は全くありません。
 
-`.env` の `VOICEVOX_SPEAKER` を変更してお好みのスタイルに切り替えられます。
+- **`/customsound add <キーワード> <添付ファイル>`**: Discord上で `.mp3` などの音源ファイルを直接アップロードするだけで、そのサーバー専用の効果音として登録され、即座に **Supabase Storage** のクラウドに保管されます。
+- **`/customemoji add <絵文字> <読み方>`**: オリジナルのカスタム絵文字やスタンプがチャットに貼られた時、どんな言葉として読み上げるかを定義できます。
+
+---
+
+## 🧠 AI処理の流れ
+
+```
+🎤 ユーザーが話す
+  ↓
+🔊 Whisper が音声を日本語テキストに変換
+  ↓
+📖 カスタム辞書でスペル修正（/addwordのルール適用）
+  ↓
+🔧 Ollamaが固有名詞の誤変換を自動補正
+  ↓
+🌐 MCP open-websearch でWeb検索（必要に応じて自動発動）
+  ↓
+💬 ずんだもんのキャラで日本語回答生成 + 固有名詞はひらがなに変換
+  ↓
+🔊 VOICEVOX でずんだもんの声に合成して再生
+```
 
 ---
 
 ## 📁 ファイル構成
 
-```
+```text
 zundamon-voice/
+├── dashboard/              # Webダッシュボード (Express + Socket.IO)
+│   ├── server.js           # バックエンドサーバー・プロセス管理
+│   └── public/             # フロントエンド (HTML/CSS/JS)
 ├── src/
-│   ├── index.js        # メインエントリポイント
-│   ├── commands.js     # スラッシュコマンド定義・ハンドラ
-│   ├── player.js       # ボイス接続・キュー再生
-│   ├── tts.js          # VOICEVOX TTS 合成
-│   └── config.js       # サーバーごとの設定保存
-├── deploy-commands.js  # コマンド登録スクリプト (任意)
-├── .env.example
+│   ├── index.js            # Discordクライアント・イベント処理
+│   ├── ai.js               # Whisper音声認識 + Ollama LLM + MCP Web検索
+│   ├── commands.js         # 全スラッシュコマンド定義・ハンドラ
+│   ├── player.js           # ボイス接続・TTS/音楽キュー管理 (yt-dlp経由)
+│   ├── tts.js              # VOICEVOX TTS合成
+│   ├── config.js           # サーバー/ユーザー設定の永続化
+│   ├── db.js               # Supabase会話メモリー管理
+│   ├── auth.js             # 2FAサーバー認証
+│   └── mcpClient.js        # MCP Web検索クライアント
+├── sounds/                 # サウンドボード用音声ファイル
+├── soundboard.json         # サウンドボードのキーワード→ファイルマッピング
+├── Launcher.cs             # C#製ワンクリック起動ランチャー
+├── ShutdownZundamon.bat    # 全プロセス一括終了スクリプト
+├── deploy-commands.js      # スラッシュコマンドのDiscord登録
+├── .env.example            # 環境変数テンプレート
 └── package.json
 ```
+
+---
+
+## ❓ トラブルシューティング
+
+| 問題 | 解決方法 |
+|------|---------|
+| コマンドが Discord に表示されない | `node deploy-commands.js` を実行してコマンドを登録 |
+| Message Content Intent エラー | Developer Portal でBot設定の Intent をオンにする |
+| VOICEVOX接続エラー | VOICEVOXアプリが起動していることを確認（port 50021） |
+| Whisperが固有名詞を間違える | `/addword` で辞書登録するか、AIが自動補正を試みます |
+| YouTube音楽が再生されない | `yt-dlp` がインストールされており、PATHが通っていることを確認 |
+| AI会話モードが起動しない | Ollamaが起動していることを確認（`ollama serve`） |
+| 新しいサーバーで使えない | オーナーへの2FAメールが届いているか確認し、リンクを承認する |

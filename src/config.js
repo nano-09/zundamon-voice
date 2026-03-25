@@ -1,40 +1,87 @@
-// src/config.js
-// Persists per-guild bot configuration to config.json
+import { getGuildConfigFromDb, saveGuildConfigToDb } from './db_supabase.js';
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+// In-memory cache for performance
+const configCache = new Map();
 
-const CONFIG_PATH = './config.json';
-
-function loadConfig() {
-  if (!existsSync(CONFIG_PATH)) return {};
-  try {
-    return JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
-  } catch {
-    return {};
+/**
+ * Pre-loads all guild configs from Supabase.
+ * Should be called once at bot startup.
+ */
+export async function initConfigs(guildIds) {
+  console.log('[Config] Initializing configs from Supabase...');
+  for (const guildId of guildIds) {
+    const data = await getGuildConfigFromDb(guildId);
+    if (data) {
+      configCache.set(guildId, {
+        name: data.name,
+        settings: data.settings || {},
+        permissions: data.permissions || {},
+        status: data.status || 'Idle'
+      });
+    } else {
+      // Default empty config
+      configCache.set(guildId, { name: '', settings: {}, permissions: {}, status: 'Idle' });
+    }
   }
 }
 
-function saveConfig(data) {
-  writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), 'utf-8');
+/**
+ * Re-fetches a single guild's config from Supabase and updates the cache.
+ * @param {string} guildId
+ */
+export async function refreshConfig(guildId) {
+  const data = await getGuildConfigFromDb(guildId);
+  if (data) {
+    configCache.set(guildId, {
+      name: data.name,
+      settings: data.settings || {},
+      permissions: data.permissions || {},
+      status: data.status || 'Idle'
+    });
+    console.log(`[Config] Sync complete for guild ${guildId}`);
+  }
 }
 
 /**
  * Returns the config object for a given guild.
  * @param {string} guildId
- * @returns {{ textChannelId?: string, voiceChannelId?: string, speakerId?: number, readName?: boolean, speed?: number, pitch?: number, volume?: number, chatMode?: boolean }}
  */
 export function getGuildConfig(guildId) {
-  const all = loadConfig();
-  return all[guildId] || {};
+  const cached = configCache.get(guildId);
+  if (cached) return cached.settings;
+  return {};
+}
+
+/**
+ * Returns the full guild record (name, settings, permissions, status)
+ */
+export function getFullGuildConfig(guildId) {
+  return configCache.get(guildId) || { name: '', settings: {}, permissions: {}, status: 'Idle' };
 }
 
 /**
  * Updates config values for a given guild (partial update).
  * @param {string} guildId
- * @param {{ textChannelId?: string, voiceChannelId?: string, speakerId?: number, readName?: boolean, speed?: number, pitch?: number, volume?: number }} updates
+ * @param {object} updates
  */
-export function setGuildConfig(guildId, updates) {
-  const all = loadConfig();
-  all[guildId] = { ...(all[guildId] || {}), ...updates };
-  saveConfig(all);
+export async function setGuildConfig(guildId, updates) {
+  const cached = configCache.get(guildId) || { name: '', settings: {}, permissions: {}, status: 'Idle' };
+  cached.settings = { ...cached.settings, ...updates };
+  configCache.set(guildId, cached);
+
+  // Sync to Supabase in background
+  saveGuildConfigToDb(guildId, cached);
+}
+
+/**
+ * Updates server name, status, or permissions specifically
+ */
+export async function updateGuildMeta(guildId, { name, status, permissions }) {
+  const cached = configCache.get(guildId) || { name: '', settings: {}, permissions: {}, status: 'Idle' };
+  if (name !== undefined) cached.name = name;
+  if (status !== undefined) cached.status = status;
+  if (permissions !== undefined) cached.permissions = permissions;
+  
+  configCache.set(guildId, cached);
+  saveGuildConfigToDb(guildId, cached);
 }
