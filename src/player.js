@@ -47,9 +47,9 @@ function getGuildState(guildId) {
 /**
  * Joins a voice channel for the given guild.
  * @param {import('discord.js').VoiceChannel} voiceChannel
- * @param {import('discord.js').TextChannel} adapterChannel - for voice adapter
+ * @param {number} [retryCount=0]
  */
-export async function joinChannel(voiceChannel) {
+export async function joinChannel(voiceChannel, retryCount = 0) {
   const state = getGuildState(voiceChannel.guild.id);
 
   // If already connected to this channel, no-op
@@ -72,12 +72,53 @@ export async function joinChannel(voiceChannel) {
     selfDeaf: false,
   });
 
-  console.log(`[G:${voiceChannel.guild.id}] [SYS] Joining voice channel: ${voiceChannel.name}`);
+  // Detailed state monitoring for debugging
+  connection.on('stateChange', (oldState, newState) => {
+    console.log(`[G:${voiceChannel.guild.id}] [VOICE] State: ${oldState.status} -> ${newState.status}`);
+  });
+
+  connection.on('error', (err) => {
+    console.error(`[G:${voiceChannel.guild.id}] [VOICE] Connection Error:`, err.message);
+  });
+
+  console.log(`[G:${voiceChannel.guild.id}] [SYS] Joining voice channel: ${voiceChannel.name} (Attempt: ${retryCount + 1})`);
   updateGuildMeta(voiceChannel.guild.id, { status: 'In Voice', name: voiceChannel.guild.name });
   logToSupabase(voiceChannel.guild.id, 'sys', `Joined voice channel: ${voiceChannel.name}`);
 
-  // Wait for connection to be ready
-  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+  // Wait for connection to be ready with detailed error and retry logic
+  try {
+    // Stage 1: Wait for Signalling/Connecting (to verify adapter is working)
+    console.log(`[G:${voiceChannel.guild.id}] [SYS] Waiting for initial signaling...`);
+    await Promise.race([
+      entersState(connection, VoiceConnectionStatus.Signalling, 10_000),
+      entersState(connection, VoiceConnectionStatus.Connecting, 10_000),
+      entersState(connection, VoiceConnectionStatus.Ready, 10_000),
+    ]).catch(() => {
+      console.warn(`[G:${voiceChannel.guild.id}] [WARN] Initial signaling slow. Attempting rejoin...`);
+      connection.rejoin();
+    });
+
+    // Stage 2: Wait for Ready state with a generous timeout
+    // Increase timeout to 45s per attempt for slow networks/Windows firewall delays
+    await entersState(connection, VoiceConnectionStatus.Ready, 45_000);
+    console.log(`[G:${voiceChannel.guild.id}] [SYS] Connection Ready.`);
+  } catch (err) {
+    console.error(`[G:${voiceChannel.guild.id}] [ERROR] Voice connection failed (Attempt ${retryCount + 1}):`, err.message);
+    if (err.stack) console.error(err.stack);
+    
+    connection.destroy();
+    state.connection = null;
+
+    // Retry up to 3 times to handle transient network/Windows UDP issues
+    if (retryCount < 2) {
+      const delay = 5000 * (retryCount + 1);
+      console.log(`[G:${voiceChannel.guild.id}] [SYS] Retrying voice connection in ${delay / 1000}s... (Retry ${retryCount + 1}/2)`);
+      await new Promise(r => setTimeout(r, delay));
+      return joinChannel(voiceChannel, retryCount + 1);
+    }
+    
+    throw new Error(`ボイスチャンネルへの接続が失敗したのだ。 (Reason: ${err.message})`);
+  }
 
   const player = createAudioPlayer();
   connection.subscribe(player);
@@ -251,6 +292,8 @@ export async function joinChannel(voiceChannel) {
   state.player = player;
   state.queue = [];
   state.playing = false;
+
+  console.log(`[G:${voiceChannel.guild.id}] [SYS] joinChannel completed successfully.`);
 }
 
 /**

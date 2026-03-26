@@ -1,4 +1,4 @@
-import { getGuildConfigFromDb, saveGuildConfigToDb } from './db_supabase.js';
+import { getGuildConfigFromDb, getAllGuildConfigsFromDb, saveGuildConfigToDb } from './db_supabase.js';
 
 // In-memory cache for performance
 const configCache = new Map();
@@ -8,9 +8,14 @@ const configCache = new Map();
  * Should be called once at bot startup.
  */
 export async function initConfigs(guildIds) {
-  console.log('[Config] Initializing configs from Supabase...');
+  if (!guildIds || guildIds.length === 0) return;
+  console.log(`[Config] Initializing configs for ${guildIds.length} guilds...`);
+  
+  const allData = await getAllGuildConfigsFromDb(guildIds);
+  const dataMap = new Map(allData.map(d => [d.guild_id, d]));
+
   for (const guildId of guildIds) {
-    const data = await getGuildConfigFromDb(guildId);
+    const data = dataMap.get(guildId);
     if (data) {
       configCache.set(guildId, {
         name: data.name,

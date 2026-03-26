@@ -57,9 +57,8 @@ const emojiDictPath = path.join(__dirname, 'emoji_ja.json');
 const emojiDict = JSON.parse(fs.readFileSync(emojiDictPath, 'utf8'));
 const customEmojisPath = path.join(__dirname, '..', 'custom_emojis.json');
 
-// ── Initialize Global Config ──────────────────────────────────────────────────
-await initBotConfig();
-console.log('[SYS] [INIT] Global bot config loaded.');
+// ── Initialize Global Config (Async) ──────────────────────────────────────────
+const configPromise = initBotConfig();
 
 process.on('uncaughtException', (err) => {
   console.error('[SYS] [CRITICAL] Uncaught Exception:', err);
@@ -68,43 +67,57 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[SYS] [CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-const token = getBotConfig('DISCORD_TOKEN');
-const clientId = getBotConfig('CLIENT_ID');
+const envToken = process.env.DISCORD_TOKEN;
+const envClientId = process.env.CLIENT_ID;
 
-if (!token) {
-  console.error('❌ DISCORD_TOKEN が設定されていません。Supabase Vault または .env を確認してください。');
-  process.exit(1);
-}
+// ── Register slash commands (Background) ─────────────────────────────────────
+configPromise.then(() => {
+  const token = getBotConfig('DISCORD_TOKEN') || envToken;
+  const clientId = getBotConfig('CLIENT_ID') || envClientId;
 
-// ── Register slash commands on startup ────────────────────────────────────────
-if (clientId) {
-  const rest = new REST({ version: '10' }).setToken(token);
-  rest
-    .put(Routes.applicationCommands(clientId), { body: commandDefinitions })
-    .then(() => console.log('✅ スラッシュコマンドを登録しました。'))
-    .catch((err) => console.warn('⚠️ コマンド登録失敗:', err.message));
-} else {
-  console.warn(
-    '⚠️ CLIENT_ID が未設定です。スラッシュコマンドは登録されません。\n' +
-    '   deploy-commands.js を先に実行してください。'
-  );
-}
+  if (token && clientId) {
+    const rest = new REST({ version: '10' }).setToken(token);
+    rest
+      .put(Routes.applicationCommands(clientId), { body: commandDefinitions })
+      .then(() => console.log('✅ スラッシュコマンドを登録しました。'))
+      .catch((err) => console.warn('⚠️ コマンド登録失敗:', err.message));
+  } else {
+    console.warn('⚠️ DISCORD_TOKEN または CLIENT_ID が未設定のため、スラッシュコマンド登録をスキップします。');
+  }
+});
 
 // ── Create Discord client ─────────────────────────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // Required for fetching all members and accurate role tracking
+    GatewayIntentBits.GuildMembers, 
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.MessageContent, // Privileged intent — enable in Dev Portal!
-    GatewayIntentBits.DirectMessages,  // For 2FA auth code DMs
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
   ],
-  partials: [Partials.Channel, Partials.Message], // Required for DM events (Message partial is critical)
+  partials: [Partials.Channel, Partials.Message],
 });
+
+let loginStarted = false;
+function tryLogin(token) {
+  if (loginStarted || !token) return;
+  loginStarted = true;
+  console.log('[SYS] [INIT] Attempting Discord login...');
+  client.login(token).catch(err => {
+    loginStarted = false; // reset for potential retry
+    console.warn(`[SYS] [WARN] Login failed: ${err.message}`);
+  });
+}
+
+// ── Fast-Track Login ──────────────────────────────────────────────────────────
+if (envToken) {
+  tryLogin(envToken);
+}
 
 // ── Ready ─────────────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async (c) => {
+  await configPromise; // CRITICAL: Ensure all global configs are loaded before proceeding
   console.log(`[SYS] [INFO] Ready event fired! Bot user: ${c.user.tag}`);
   console.log(`   VOICEVOX: ${getBotConfig('VOICEVOX_URL') || 'http://localhost:50021'}`);
   console.log(`   スピーカー ID: ${getBotConfig('VOICEVOX_SPEAKER') || '3'} (ずんだもん)`);
@@ -127,6 +140,11 @@ client.once(Events.ClientReady, async (c) => {
       }
     }
   }
+
+  // ── Auto-rejoin stabilization ──────────────────────────────────────────────
+  // Wait a small amount after Ready for the gateway to stabilize
+  console.log(`[SYS] [INFO] Waiting 3 seconds for gateway to settle before auto-rejoin...`);
+  await new Promise(r => setTimeout(r, 3000));
 
   // Auto-rejoin last voice channel
   for (const guildId of guildIds) {
@@ -593,5 +611,13 @@ process.stdin.on('data', async (data) => {
   }
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
-client.login(token);
+// ── Start (Fallback Login) ───────────────────────────────────────────────────
+configPromise.then(() => {
+  const token = getBotConfig('DISCORD_TOKEN') || envToken;
+  if (!loginStarted && token) {
+    tryLogin(token);
+  } else if (!loginStarted && !token) {
+    console.error('❌ DISCORD_TOKEN が見つかりません。プログラムを終了します。');
+    process.exit(1);
+  }
+});

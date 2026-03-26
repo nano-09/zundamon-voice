@@ -609,6 +609,8 @@ function renderConfig(settings, permissions) {
     ['Text Channel',  settings.textChannelId ? `#${settings.textChannelId}` : 'Not set'],
     ['Announce VC',   settings.announceVoice ? 'Enabled' : 'Disabled'],
     ['Soundboard',    settings.soundboardMode ? 'Enabled' : 'Disabled'],
+    ['CleanChat',     settings.cleanChatTasks?.[settings.textChannelId] ? `${settings.cleanChatTasks[settings.textChannelId]} min` : 'Off'],
+    ['Music Volume',  settings.karaokeVolume ?? '1.0'],
   ];
 
   infoList.innerHTML = settingRows.map(([k,v]) =>

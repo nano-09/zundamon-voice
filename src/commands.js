@@ -462,7 +462,15 @@ export async function handleCommand(interaction) {
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('[join]', err);
-      await interaction.editReply('❌ ボイスチャンネルへの参加に失敗したのだ。');
+      const isTimeout = err.name === 'AbortError' || err.message.includes('timeout') || err.message.includes('Ready');
+      let errorMessage = '❌ ボイスチャンネルへの参加に失敗したのだ。';
+      if (isTimeout) {
+        errorMessage += '\n\n**🔍 考えられる原因:**\n' +
+          '・サーバーのファイアウォールでUDP通信が制限されている可能性があるのだ\n' +
+          '・Discord側のボイスサーバーが混雑しているか不安定なのだ\n' +
+          '・ボットに「接続」と「発言」の権限があるか確認してほしいのだ！';
+      }
+      await interaction.editReply(errorMessage);
     }
     return;
   }
@@ -644,12 +652,14 @@ export async function handleCommand(interaction) {
         {
           name: '⚙️ システム設定',
           value: `> **名前読込:** ${cfg.readName === false ? '`OFF`' : '`ON`'}\n` +
-            `> **入退告知:** ${cfg.announceVoice ? '`ON`' : '`OFF`'}`,
+            `> **入退告知:** ${cfg.announceVoice ? '`ON`' : '`OFF`'}\n` +
+            `> **自動削除:** ${cfg.cleanChatTasks?.[interaction.channelId] ? `\`${cfg.cleanChatTasks[interaction.channelId]}分\`` : '`OFF`'}`,
           inline: true
         },
         {
           name: '🔒 制限・権限',
           value: `> **字数制限:** \`${cfg.trimWordCount || '無制限'}\`\n` +
+            `> **音楽音量:** \`${cfg.karaokeVolume ?? 1.0}\`\n` +
             `> **個別設定:** \`${ruleCount > 0 ? `${ruleCount}件` : 'なし'}\``,
           inline: true
         }

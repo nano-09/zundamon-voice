@@ -109,6 +109,21 @@ export async function getGuildConfigFromDb(guildId) {
   }
 }
 
+export async function getAllGuildConfigsFromDb(guildIds) {
+  try {
+    if (!guildIds || guildIds.length === 0) return [];
+    const { data, error } = await supabase
+      .from('guild_configs')
+      .select('*')
+      .in('guild_id', guildIds);
+    if (error) throw error;
+    return data ?? [];
+  } catch (err) {
+    console.error(`[Supabase] getAllGuildConfigsFromDb error:`, err.message);
+    return [];
+  }
+}
+
 export async function saveGuildConfigToDb(guildId, updates) {
   try {
     const payload = {
