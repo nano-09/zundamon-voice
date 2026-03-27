@@ -10,8 +10,8 @@ function showToast(message, type = 'info') {
     document.body.appendChild(container);
   }
   const toast = document.createElement('div');
-  const colors = { ok:'#05cd99', pending:'#ffb547', error:'#ee5d50', info:'#4318ff' };
-  toast.style.cssText = `background:#1a1f5e;color:#fff;padding:12px 18px;border-radius:12px;font-size:13px;font-weight:600;border-left:4px solid ${colors[type]||colors.info};box-shadow:0 8px 24px rgba(0,0,0,0.2);animation:slideToast 0.3s ease;max-width:320px;`;
+  const colors = { ok: '#05cd99', pending: '#ffb547', error: '#ee5d50', info: '#4318ff' };
+  toast.style.cssText = `background:#1a1f5e;color:#fff;padding:12px 18px;border-radius:12px;font-size:13px;font-weight:600;border-left:4px solid ${colors[type] || colors.info};box-shadow:0 8px 24px rgba(0,0,0,0.2);animation:slideToast 0.3s ease;max-width:320px;`;
   toast.textContent = message;
   container.appendChild(toast);
   setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.4s'; setTimeout(() => toast.remove(), 400); }, 3500);
@@ -27,13 +27,31 @@ const state = {
   activeTab: 'tab-dashboard',
   selectedGuildId: null,
   activeLTab: 'analytics',
+  dbGuilds: [],
   guilds: [],
   pingHistory: [],
   cpuHistory: [],
   ramHistory: [],
-  pingStats: { min: Infinity, max: -Infinity, sum: 0, count: 0 },
+  pingStats: { sum: 0, count: 0, min: 10000, max: 0, history: [] },
   charts: {},
   errors: [],
+  heartbeatTimeout: null,
+  originalPermsJson: '',
+  voiceNames: {
+    1: 'ずんだもん (あまあま)',
+    3: 'ずんだもん (ノーマル)',
+    5: 'ずんだもん (セクシー)',
+    7: 'ずんだもん (ツンツン)',
+    2: '四国めたん (あまあま)',
+    4: '四国めたん (ノーマル)',
+    6: '四国めたん (セクシー)',
+    8: '四国めたん (ツンツン)',
+    10: '雨晴はう (ノーマル)',
+    13: '青山龍星 (ノーマル)',
+    14: '冥鳴ひまり (ノーマル)',
+    16: '九州そら (あまあま)'
+  },
+  logCache: new Map(), // Key: "guildId:type", Value: Array
   metadataCache: {}, // { guildId: { id: { type, name, avatar, color } } }
 };
 
@@ -48,15 +66,15 @@ function fmt(ms) {
 function safeFetch(url) {
   return fetch(url).then(r => r.json()).catch(() => null);
 }
-function now() { return new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+function now() { return new Date().toLocaleTimeString('ja', { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 
 // ── Navigation ─────────────────────────────────────────────────────────────────
 function switchTab(tab) {
   const titles = {
-    'tab-dashboard': 'Dashboard',
-    'tab-logs':      'Server Logs',
-    'tab-commands':  'Commands',
-    'tab-account':   'Account',
+    'tab-dashboard': 'ダッシュボード',
+    'tab-logs': 'サーバーログ',
+    'tab-commands': 'コマンド',
+    'tab-account': 'アカウント',
   };
   document.querySelectorAll('.nav-item').forEach(i => {
     i.classList.toggle('active', i.dataset.tab === tab);
@@ -65,8 +83,20 @@ function switchTab(tab) {
     t.classList.toggle('active', t.id === tab);
   });
   state.activeTab = tab;
+  localStorage.setItem('activeTab', tab);
   el('page-title').textContent = titles[tab] || '';
   if (tab === 'tab-logs') loadGuildList();
+  if (tab === 'tab-account') {
+    loadGlobalErrors();
+    // Clear notification badge when viewing account tab
+    state.errors = [];
+    const badge = el('notif-badge');
+    if (badge) {
+      badge.textContent = '0';
+      badge.style.display = 'none';
+      badge.classList.remove('has-new');
+    }
+  }
 }
 
 function setupNav() {
@@ -79,10 +109,36 @@ function setupNav() {
   });
   // Notification icon redirect
   el('btn-notify')?.addEventListener('click', () => switchTab('tab-account'));
+  // Clear global errors button
+  el('btn-clear-global-errors')?.addEventListener('click', async () => {
+    if (!confirm('本当にすべてのエラーログをデータベースから削除しますか？')) return;
+    try {
+      const res = await fetch('/api/logs/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'err' })
+      });
+      if (!res.ok) throw new Error('Clear failed');
+      
+      state.errors = [];
+      state.logCache.delete('global:err');
+      renderLogsFromCache('global', 'err');
+      const badge = el('notif-badge');
+      if (badge) {
+        badge.textContent = '0';
+        badge.style.display = 'none';
+        badge.classList.remove('has-new');
+      }
+      el('kpi-errors').textContent = '0';
+      showToast('🗑 エラーログをクリアしました', 'ok');
+    } catch (err) {
+      showToast('❌ ログのクリアに失敗しました', 'error');
+    }
+  });
 }
 
 // ── Charts ─────────────────────────────────────────────────────────────────────
-const CHART_OPTS = (label, color, fill=true) => ({
+const CHART_OPTS = (label, color, fill = true) => ({
   type: 'line',
   data: {
     labels: [],
@@ -114,8 +170,8 @@ const CHART_OPTS = (label, color, fill=true) => ({
 });
 
 function initCharts() {
-  state.charts.resource = new Chart(el('resourceChart'), CHART_OPTS('CPU %', '#4318ff'));
-  state.charts.ping     = new Chart(el('pingChart'),     CHART_OPTS('Ping (ms)', '#05cd99', false));
+  state.charts.resource = new Chart(el('resourceChart'), CHART_OPTS('CPU 使用率', '#4318ff'));
+  state.charts.ping = new Chart(el('pingChart'), CHART_OPTS('遅延 (ms)', '#05cd99', false));
 }
 
 function pushChartPoint(chart, label, value, maxPoints = 20) {
@@ -136,14 +192,14 @@ document.querySelectorAll('.chip[data-res]').forEach(chip => {
     const res = chip.dataset.res;
     const chart = state.charts.resource;
     if (res === 'cpu') {
-      chart.data.datasets[0].data = [...state.cpuHistory.map(x=>x.v)];
-      chart.data.labels = [...state.cpuHistory.map(x=>x.t)];
-      chart.data.datasets[0].label = 'CPU %';
+      chart.data.datasets[0].data = [...state.cpuHistory.map(x => x.v)];
+      chart.data.labels = [...state.cpuHistory.map(x => x.t)];
+      chart.data.datasets[0].label = 'CPU 使用率';
       chart.data.datasets[0].borderColor = '#4318ff';
       chart.data.datasets[0].backgroundColor = '#4318ff22';
     } else {
-      chart.data.datasets[0].data = [...state.ramHistory.map(x=>x.v)];
-      chart.data.labels = [...state.ramHistory.map(x=>x.t)];
+      chart.data.datasets[0].data = [...state.ramHistory.map(x => x.v)];
+      chart.data.labels = [...state.ramHistory.map(x => x.t)];
       chart.data.datasets[0].label = 'RAM GB';
       chart.data.datasets[0].borderColor = '#ffb547';
       chart.data.datasets[0].backgroundColor = '#ffb54722';
@@ -155,7 +211,7 @@ document.querySelectorAll('.chip[data-res]').forEach(chip => {
 // ── Socket Events ──────────────────────────────────────────────────────────────
 socket.on('connect', () => {
   el('offline-overlay').classList.remove('show');
-  setPip('pip-bot', 'online');
+  setPip('pip-bot', 'warning'); // Default to connecting until heartbeat arrives
 });
 socket.on('disconnect', () => {
   el('offline-overlay').classList.add('show');
@@ -163,7 +219,7 @@ socket.on('disconnect', () => {
 });
 
 socket.on('system_shutdown', () => {
-  showToast('⛔ System is shutting down. Closing tab...', 'error');
+  showToast('⛔ システムがシャットダウン中です。タブを閉じます...', 'error');
   setTimeout(() => {
     window.close();
     window.location.href = 'about:blank'; // Fallback if window.close() is blocked
@@ -177,30 +233,114 @@ function setPip(id, state) {
   pip.classList.add(state);
 }
 
+function updateOwnerInfo(owner) {
+  if (!owner) return;
+  const { username, avatar, email } = owner;
+  const nameEl = el('owner-username');
+  if (nameEl) nameEl.textContent = username;
+  const emailEl = el('owner-email');
+  if (emailEl) emailEl.textContent = email;
+  if (avatar) {
+    const img = el('owner-avatar');
+    if (img) { img.src = avatar; img.style.display = 'block'; }
+    const fallback = el('owner-fallback');
+    if (fallback) fallback.style.display = 'none';
+  }
+}
+
 socket.on('stats_update', (data) => {
+  if (data.type === 'SYSTEM_INIT') {
+    updateOwnerInfo(data.owner);
+    return;
+  }
+
+  if (data.type === 'BOT_LOG') {
+    const gId = data.guildId || 'global';
+    appendLogToCache(gId, 'bot', data.content);
+    if (state.selectedGuildId === data.guildId && state.activeTab === 'tab-logs' && state.activeLTab === 'bot') {
+      renderLogsFromCache(gId, 'bot');
+    }
+    return;
+  }
+
+  if (data.type === 'ERROR_LOG') {
+    const gId = data.guildId || 'global';
+    appendLogToCache(gId, 'err', data.message || data.content);
+    if (gId === (state.selectedGuildId || 'global')) {
+      if (state.activeTab === 'tab-logs' && state.activeLTab === 'err') renderLogsFromCache(gId, 'err');
+      if (state.activeTab === 'tab-account') renderLogsFromCache('global', 'err');
+    }
+    return;
+  }
+
   if (data.type !== 'HEARTBEAT') return;
 
   // KPIs
   el('kpi-guilds').textContent = data.guilds;
   el('kpi-uptime').textContent = fmt(data.uptime || 0);
-  el('kpi-ping').textContent   = `${data.ping} ms`;
-  el('badge-servers').textContent = `${data.guilds} server${data.guilds !== 1 ? 's' : ''}`;
+  el('kpi-ping').textContent = `${data.ping} ms`;
+  el('badge-servers').textContent = `${data.guilds} サーバー`;
+
+  // Sync Profiles
+  updateOwnerInfo(data.owner);
+
+  // Bot Status Pill & Top-right Pip
+  const statusPill = el('bot-status-pill');
+  if (data.status === 'online') {
+    if (statusPill) {
+      statusPill.textContent = '● オンライン';
+      statusPill.className = 'status-online-pill online';
+    }
+    setPip('pip-bot', 'online');
+  } else if (data.status === 'connecting') {
+    if (statusPill) {
+      statusPill.textContent = '● 接続中';
+      statusPill.className = 'status-online-pill connecting';
+    }
+    setPip('pip-bot', 'warning');
+  } else {
+    if (statusPill) {
+      statusPill.textContent = '● オフライン';
+      statusPill.className = 'status-online-pill offline';
+    }
+    setPip('pip-bot', 'error');
+  }
+
+  // Watchdog: detect if heartbeats stop entirely
+  clearTimeout(state.heartbeatTimeout);
+  state.heartbeatTimeout = setTimeout(() => {
+    const pill = el('bot-status-pill');
+    if (pill) {
+      pill.textContent = '● 切断';
+      pill.className = 'status-online-pill offline';
+    }
+    setPip('pip-bot', 'error');
+    showToast('📡 ボットへの接続が失われました。', 'error');
+  }, 10000); // 10 seconds without HB = disconnected
 
   // Account tab mirrors
   el('acct-guilds').textContent = data.guilds;
   el('acct-uptime').textContent = fmt(data.uptime || 0);
-  el('acct-ping').textContent   = `${data.ping} ms`;
+  el('acct-ping').textContent = `${data.ping} ms`;
 
   // Bot avatar
   if (data.user) {
     const botName = data.user.username;
-    el('bot-username-side').textContent = botName;
-    el('acct-username').textContent     = botName;
+    const sideName = el('bot-username-side');
+    if (sideName) sideName.textContent = botName;
+    const acctName = el('acct-username');
+    if (acctName) acctName.textContent = botName;
+
     if (data.user.avatar) {
-      const imgs = [el('bot-avatar-side'), el('acct-avatar')];
-      imgs.forEach(img => { if (img) { img.src = data.user.avatar; img.style.display = 'block'; } });
-      el('bot-av-fallback').style.display = 'none';
-      el('acct-fallback').style.display   = 'none';
+      const sideAv = el('bot-avatar-side');
+      if (sideAv) { sideAv.src = data.user.avatar; sideAv.style.display = 'block'; }
+      const acctAv = el('acct-avatar');
+      if (acctAv) { acctAv.src = data.user.avatar; acctAv.style.display = 'block'; }
+
+      const sideFall = el('bot-av-fallback');
+      if (sideFall) sideFall.style.display = 'none';
+      const acctFall = el('acct-fallback');
+      if (acctFall) acctFall.style.display = 'none';
     }
   }
 
@@ -218,9 +358,114 @@ socket.on('stats_update', (data) => {
 
   // Guilds list → server table
   if (Array.isArray(data.guildsDetail)) {
+    // Sort by TTS Read + Commands
+    data.guildsDetail.sort((a, b) => ((b.ttsCount || 0) + (b.cmdCount || 0)) - ((a.ttsCount || 0) + (a.cmdCount || 0)));
     state.guilds = data.guildsDetail;
+
+    // Extract metadata from heartbeat
+    data.guildsDetail.forEach(g => {
+      if (!state.metadataCache[g.id]) state.metadataCache[g.id] = {};
+      if (g.textChannelId && g.textChannelName) {
+        state.metadataCache[g.id][g.textChannelId] = { type: 'channel', name: g.textChannelName };
+      }
+      if (g.voiceChannelId && g.voiceChannelName) {
+        state.metadataCache[g.id][g.voiceChannelId] = { type: 'channel', name: g.voiceChannelName };
+      }
+
+      // Update dbGuilds status for live gallery update
+      if (state.dbGuilds) {
+        const dg = state.dbGuilds.find(x => x.guild_id === g.id);
+        if (dg) {
+          const newStatus = g.voiceChannelId ? '通話中' : '待機中';
+          dg.live_status = newStatus;
+          dg.live_icon = g.icon || dg.icon_url;
+        }
+      }
+    });
+
     renderServerTable(data.guildsDetail);
-    if (state.activeTab === 'tab-logs') renderGuildItems();
+    if (state.activeTab === 'tab-logs') {
+      renderGuildItems(el('guild-search')?.value || '');
+
+      // Update detail panel if open for this guild
+      if (state.selectedGuildId) {
+        const live = data.guildsDetail.find(x => x.id === state.selectedGuildId);
+        if (live) {
+          const status = live.voiceChannelId ? '通話中' : '待機中';
+          const sBadge = el('detail-status-badge');
+          if (sBadge && sBadge.textContent !== status) {
+            sBadge.textContent = status;
+            sBadge.className = 'status-badge-mini ' + (status.includes('通話') || status.includes('再生') ? 'voice' : 'idle');
+          }
+          const iconEl = el('detail-icon');
+          if (iconEl && live.icon && iconEl.src !== live.icon) {
+            iconEl.src = live.icon;
+            iconEl.style.display = 'block';
+          }
+        }
+      }
+    }
+  }
+
+  // Web Search status
+  if (data.websearchStatus !== undefined) {
+    setPip('pip-websearch', data.websearchStatus ? 'online' : 'warning');
+  }
+});
+
+socket.on('config_updated', (data) => {
+  if (!data.guildId) return;
+
+  // Find in dbGuilds if possible
+  const dg = state.dbGuilds?.find(x => x.guild_id === data.guildId);
+  if (dg) {
+    if (data.name !== undefined) dg.name = data.name;
+    if (data.permissions !== undefined) dg.permissions = data.permissions;
+    if (data.settings !== undefined) dg.settings = data.settings;
+    if (data.status !== undefined) {
+      dg.status = data.status;
+      dg.live_status = data.status;
+    }
+    if (data.icon !== undefined) dg.live_icon = data.icon;
+  }
+
+  // Update active view if this guild is selected
+  if (state.selectedGuildId === data.guildId) {
+    const activeSettings = data.settings || dg?.settings || {};
+    const activePerms = data.permissions || dg?.permissions || {};
+
+    // If name or status changed, update the header
+    if (data.name) el('detail-name').textContent = data.name;
+    if (data.status) {
+      dg.live_status = data.status;
+      const sBadge = el('detail-status-badge');
+      if (sBadge) {
+        sBadge.textContent = data.status;
+        sBadge.className = 'status-badge-mini ' + (data.status.includes('通話') || data.status.includes('再生') ? 'voice' : data.status.includes('Karaoke') ? 'karaoke' : 'idle');
+      }
+    }
+
+    renderConfig(activeSettings, activePerms);
+
+    // Visual feedback
+    if (data.permissions !== undefined) {
+      showToast('🔒 サーバーの権限設定が更新されました', 'info');
+    } else if (data.settings !== undefined) {
+      showToast('⚙️ サーバー設定が更新されました', 'info');
+    }
+  }
+
+  renderGuildItems(el('guild-search')?.value || '');
+});
+
+socket.on('metadata_resolved', (data) => {
+  if (data.guildId) {
+    if (!state.metadataCache[data.guildId]) state.metadataCache[data.guildId] = {};
+    Object.assign(state.metadataCache[data.guildId], data.results);
+    if (state.selectedGuildId === data.guildId) {
+      const dg = state.dbGuilds.find(g => g.guild_id === data.guildId);
+      renderConfig(dg?.settings || {}, dg?.permissions || {});
+    }
   }
 });
 
@@ -242,17 +487,45 @@ socket.on('system_resources', (res) => {
 
   // Service pill for Voicebox
   if (res.voicevoxOk !== undefined) setPip('pip-voicevox', res.voicevoxOk ? 'online' : 'error');
-  if (res.ollamaOk !== undefined)   setPip('pip-ollama',   res.ollamaOk   ? 'online' : 'warning');
+  if (res.ollamaOk !== undefined) setPip('pip-ollama', res.ollamaOk ? 'online' : 'warning');
 });
 
 socket.on('action_response', (res) => {
   showToast(res.message, res.status);
 });
 
+socket.on('snapshot_update', (snap) => {
+  if (state.selectedGuildId !== snap.guildId) return;
+
+  // 1. Update KPIs (Add deltas)
+  if (el('a-tts')) el('a-tts').textContent = parseInt(el('a-tts').textContent || 0) + (snap.texts_spoken || 0);
+  if (el('a-ai')) el('a-ai').textContent = parseInt(el('a-ai').textContent || 0) + (snap.ai_queries || 0);
+  
+  const snapCmdTotal = Object.values(snap.commands_used || {}).reduce((s, v) => s + v, 0);
+  if (el('a-cmds')) el('a-cmds').textContent = parseInt(el('a-cmds').textContent || 0) + snapCmdTotal;
+  
+  if (el('a-users')) el('a-users').textContent = Math.max(parseInt(el('a-users').textContent || 0), snap.members_active || 0);
+
+  // 2. Update Line Chart
+  if (activityChartInst) {
+    const timeLabel = new Date(snap.snapshot_at).toLocaleTimeString('ja', { hour: '2-digit', minute: '2-digit' });
+    activityChartInst.data.labels.push(timeLabel);
+    activityChartInst.data.datasets[0].data.push(snap.texts_spoken || 0);
+    activityChartInst.data.datasets[1].data.push(snapCmdTotal);
+    
+    // Keep max 100 points to prevent bloat
+    if (activityChartInst.data.labels.length > 100) {
+      activityChartInst.data.labels.shift();
+      activityChartInst.data.datasets.forEach(d => d.data.shift());
+    }
+    activityChartInst.update('none');
+  }
+});
+
 socket.on('guild_added', async (data) => {
   console.log('[Socket] Guild added:', data.guildId);
   await loadGuildList();
-  showToast('🆕 New server joined!', 'ok');
+  showToast('🆕 新しいサーバーに参加しました！', 'ok');
 });
 
 socket.on('guild_removed', async (data) => {
@@ -263,17 +536,27 @@ socket.on('guild_removed', async (data) => {
     state.selectedGuildId = null;
   }
   await loadGuildList();
-  showToast('🚪 Bot left a server.', 'warning');
+  showToast('🚪 サーバーから退出しました。', 'warning');
 });
 
 socket.on('log', (msg) => {
-  if (msg.guildId === state.selectedGuildId && state.activeLTab !== 'analytics') {
-    const typeToPane = { bot:'bot', sys:'sys', err:'err' };
-    const paneKey = typeToPane[msg.type] || 'sys';
-    appendLog(paneKey, msg.text || msg.message, msg.type);
+  const gId = msg.guildId || 'global';
+  const typeToPane = { bot: 'bot', sys: 'sys', err: 'err', tts: 'tts', cmd: 'cmd' };
+  const type = msg.type || 'sys';
+
+  appendLogToCache(gId, type, msg.text || msg.message);
+
+  // Real-time UI update if viewing
+  if (state.activeTab === 'tab-logs' && state.selectedGuildId === msg.guildId) {
+    if (state.activeLTab === typeToPane[type]) {
+      renderLogsFromCache(gId, typeToPane[type]);
+    }
+  } else if (state.activeTab === 'tab-account' && !msg.guildId && type === 'err') {
+    renderLogsFromCache('global', 'err');
   }
-  // Error notification
-  if (msg.type === 'err') {
+
+  // Error notification sync
+  if (type === 'err') {
     pushError(msg.text || msg.message);
   }
 });
@@ -281,7 +564,7 @@ socket.on('log', (msg) => {
 socket.on('metadata_resolved', (data) => {
   if (!state.metadataCache[data.guildId]) state.metadataCache[data.guildId] = {};
   Object.assign(state.metadataCache[data.guildId], data.results);
-  
+
   // Update UI chips if we are currently looking at this guild
   if (state.selectedGuildId === data.guildId) {
     Object.entries(data.results).forEach(([id, meta]) => {
@@ -300,53 +583,52 @@ function renderServerTable(guilds) {
   guilds.forEach(g => {
     const isVoice = !!g.voiceChannelId;
     const statusColor = isVoice ? '#05cd99' : '#a3aed0';
-    const statusTxt   = isVoice ? 'In Voice' : 'Idle';
-    const iconHtml    = g.icon
+    const statusTxt = isVoice ? '通話中' : '待機中';
+    const iconHtml = g.icon
       ? `<img src="${g.icon}" class="srv-icon-sm" alt="">`
-      : `<div style="width:28px;height:28px;border-radius:8px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:12px">${g.name?.[0]||'?'}</div>`;
+      : `<div style="width:28px;height:28px;border-radius:8px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:12px">${g.name?.[0] || '?'}</div>`;
 
     tbody.insertAdjacentHTML('beforeend', `<tr>
-      <td><div class="srv-name">${iconHtml} ${escHtml(g.name||'Unknown')}</div></td>
+      <td><div class="srv-name">${iconHtml} ${escHtml(g.name || 'Unknown')}</div></td>
       <td>${g.memberCount ?? '—'}</td>
       <td><span class="srv-status-dot" style="background:${statusColor}"></span>${statusTxt}</td>
       <td>${g.joined_at ? new Date(g.joined_at).toLocaleDateString() : '—'}</td>
-      <td>${g.sessionCommands !== undefined ? g.sessionCommands : '—'}</td>
+      <td style="font-weight:700;color:var(--accent)">${g.ttsCount || 0}</td>
+      <td>${g.cmdCount || 0}</td>
     </tr>`);
   });
 }
 
-// ── Global Commands Tracker ────────────────────────────────────────────────────
-async function loadGlobalCommandsUsage() {
-  const data = await safeFetch('/api/global-commands');
-  if (!data) return;
+function appendLogToCache(guildId, type, message) {
+  const key = `${guildId || 'global'}:${type}`;
+  if (!state.logCache.has(key)) state.logCache.set(key, []);
+  const logs = state.logCache.get(key);
+  logs.push({ t: new Date(), message });
+  if (logs.length > 100) logs.shift();
+}
 
-  document.querySelectorAll('.cmd-row').forEach(row => {
-    const codeEl = row.querySelector('code');
-    if (!codeEl) return;
-    
-    const cmdName = codeEl.textContent.replace('/', '').trim();
-    const count = data[cmdName] || 0;
-    
-    let badge = row.querySelector('.cmd-usage-badge');
-    if (!badge) {
-      badge = document.createElement('span');
-      badge.className = 'cmd-usage-badge';
-      
-      const spanEl = row.querySelector('span:not(.cmd-usage-badge)');
-      if (spanEl) {
-         const rightWrap = document.createElement('div');
-         rightWrap.style.display = 'flex';
-         rightWrap.style.flexDirection = 'column';
-         rightWrap.style.alignItems = 'flex-end';
-         rightWrap.style.gap = '4px';
-         
-         row.insertBefore(rightWrap, spanEl);
-         rightWrap.appendChild(spanEl);
-         rightWrap.appendChild(badge);
-      }
-    }
-    badge.innerHTML = `🔥 ${count.toLocaleString()} executed`;
-  });
+function renderLogsFromCache(guildId, type) {
+  const containerId = (guildId === 'global' && type === 'err') ? 'global-error-console' : `console-${type}`;
+  const container = el(containerId);
+  if (!container) return;
+
+  const key = `${guildId}:${type}`;
+  const logs = state.logCache.get(key) || [];
+
+  if (logs.length === 0) {
+    container.innerHTML = `<span style="color:#555">${type === 'err' ? '最近のエラーはありません。' : 'ログが見つかりません。'}</span>`;
+    return;
+  }
+
+  container.innerHTML = logs.map(l => {
+    const time = l.t.toLocaleTimeString();
+    const isErr = type === 'err';
+    return `<div class="log-line ${isErr ? 'err' : ''}">
+      <span style="color:var(--text-muted)">[${time}]</span> 
+      <span>${escHtml(l.message)}</span>
+    </div>`;
+  }).join('');
+  container.scrollTop = container.scrollHeight;
 }
 
 // ── Server Gallery (Logs tab) ──────────────────────────────────────────────────
@@ -361,33 +643,40 @@ async function loadGuildList() {
   state.dbGuilds.forEach(dg => {
     const live = state.guilds.find(g => g.id === dg.guild_id);
     if (live) {
-      dg.live_status  = live.voiceChannelId ? 'In Voice' : 'Idle';
-      dg.live_icon    = live.icon || dg.icon_url;
+      dg.live_status = live.voiceChannelId ? '通話中' : '待機中';
+      dg.live_icon = live.icon || dg.icon_url;
     } else {
-      dg.live_status  = dg.status || 'Idle';
-      dg.live_icon    = dg.icon_url;
+      dg.live_status = dg.status || '待機中';
+      dg.live_icon = dg.icon_url;
     }
   });
   renderGuildItems();
+  
+  // Persist selected guild if we are in logs tab and have a saved ID
+  const savedGid = localStorage.getItem('selectedGuildId');
+  if (savedGid && !state.selectedGuildId) {
+    const g = state.dbGuilds.find(x => x.guild_id === savedGid);
+    if (g) openGuildDetail(g);
+  }
 }
 
 function renderGuildItems(filter = '') {
   const container = el('guild-items');
   if (!container) return;
   const list = (state.dbGuilds || state.guilds.map(g => ({
-    guild_id: g.id, name: g.name, live_icon: g.icon, live_status: g.voiceChannelId ? 'In Voice' : 'Idle'
+    guild_id: g.id, name: g.name, live_icon: g.icon, live_status: g.voiceChannelId ? '通話中' : '待機中'
   }))).filter(g => g.name?.toLowerCase().includes(filter.toLowerCase()));
 
   container.innerHTML = '';
   list.forEach(g => {
     const iconHtml = g.live_icon
       ? `<img src="${g.live_icon}" class="guild-item-icon" alt="">`
-      : `<div class="guild-item-icon-fallback">${(g.name||'?')[0].toUpperCase()}</div>`;
+      : `<div class="guild-item-icon-fallback">${(g.name || '?')[0].toUpperCase()}</div>`;
     const isSelected = state.selectedGuildId === g.guild_id;
     const item = document.createElement('div');
     item.className = 'guild-item' + (isSelected ? ' selected' : '');
     item.dataset.guildId = g.guild_id;
-    item.innerHTML = `${iconHtml}<div class="guild-item-info"><div class="guild-item-name">${escHtml(g.name||'Unknown')}</div><div class="guild-item-status">${g.live_status||'Idle'}</div></div>`;
+    item.innerHTML = `${iconHtml}<div class="guild-item-info"><div class="guild-item-name">${escHtml(g.name || '不明なサーバー')}</div><div class="guild-item-status">${g.live_status || '待機中'}</div></div>`;
     item.addEventListener('click', () => openGuildDetail(g));
     container.appendChild(item);
   });
@@ -398,6 +687,7 @@ el('guild-search')?.addEventListener('input', e => renderGuildItems(e.target.val
 // ── Guild Detail Panel ─────────────────────────────────────────────────────────
 async function openGuildDetail(g) {
   state.selectedGuildId = g.guild_id;
+  localStorage.setItem('selectedGuildId', g.guild_id);
   renderGuildItems(el('guild-search')?.value || '');
 
   el('log-placeholder').style.display = 'none';
@@ -410,13 +700,14 @@ async function openGuildDetail(g) {
   if (g.live_icon) { iconEl.src = g.live_icon; iconEl.style.display = 'block'; }
   else iconEl.style.display = 'none';
 
-  const status = g.live_status || g.status || 'Idle';
+  const status = g.live_status || g.status || '待機中';
   const sBadge = el('detail-status-badge');
   sBadge.textContent = status;
-  sBadge.className = 'status-badge-mini ' + (status.includes('Voice') ? 'voice' : status.includes('Karaoke') ? 'karaoke' : 'idle');
+  sBadge.className = 'status-badge-mini ' + (status.includes('通話') || status.includes('再生') ? 'voice' : status.includes('Karaoke') ? 'karaoke' : 'idle');
 
-  // Switch to analytics tab first
-  switchLTab('analytics');
+  // Switch to last active sub-tab (or default to analytics)
+  const savedLTab = localStorage.getItem('activeLTab') || 'analytics';
+  switchLTab(savedLTab);
 
   // Load analytics
   loadDetailAnalytics(g.guild_id);
@@ -435,7 +726,7 @@ async function openGuildDetail(g) {
   const blockBtn = el('btn-block-guild');
   const updateBlockBtn = () => {
     const isBlocked = g.settings?.blocked === true;
-    blockBtn.textContent = isBlocked ? '✅ Unblock Server' : '🚫 Block Server';
+    blockBtn.textContent = isBlocked ? '✅ サーバーのブロックを解除' : '🚫 サーバーをブロック';
     blockBtn.className = `action-btn ${isBlocked ? 'secondary' : 'danger'}`;
   };
   updateBlockBtn();
@@ -470,22 +761,73 @@ async function openGuildDetail(g) {
     }
   };
   el('btn-reset-perms').onclick = async () => {
-    if (!confirm(`⚠️ Are you sure you want to RESET ALL permissions for "${g.name}"?\nThis will delete all custom allow/deny rules.`)) return;
-    showToast('🗑 Resetting permissions...', 'pending');
+    if (!confirm(`⚠️ 本当に "${g.name}" の全権限をリセットしますか？\nすべてのカスタム許可/拒否ルールが削除されます。`)) return;
+    showToast('🗑 権限をリセット中...', 'pending');
     try {
       const res = await fetch('/api/permissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ guildId: g.guild_id, permissions: {} }) // Empty clears all
+        body: JSON.stringify({ guildId: g.guild_id, permissions: {} }) // Empty triggers default on backend
       });
       if (!res.ok) throw new Error('Reset failed');
-      showToast('✅ Permissions reset successfully!', 'ok');
-      g.permissions = {};
-      renderConfig(g.settings || {}, {});
+      const result = await res.json();
+      showToast('✅ 権限をリセットしました！', 'ok');
+      g.permissions = result.permissions || {};
+      state.originalPermsJson = JSON.stringify(g.permissions);
+      renderConfig(g.settings || {}, g.permissions);
     } catch (err) {
-      showToast('❌ Failed to reset permissions.', 'error');
+      showToast('❌ 権限のリセットに失敗しました。', 'error');
     }
   };
+}
+
+async function saveGuildSettings(guildId) {
+  if (!guildId) return;
+  const container = el('config-info-list');
+  if (!container) return;
+
+  const settings = {};
+  container.querySelectorAll('input, select').forEach(input => {
+    const key = input.dataset.key;
+    if (!key) return;
+
+    if (input.type === 'checkbox') {
+      settings[key] = input.checked;
+    } else if (input.type === 'number') {
+      const val = parseFloat(input.value);
+      settings[key] = isNaN(val) ? null : val;
+    } else {
+      settings[key] = input.value || null;
+    }
+  });
+
+  showToast('⚙️ 設定を保存中...', 'pending');
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ guildId, settings })
+    });
+    if (!res.ok) throw new Error('Save failed');
+    const result = await res.json();
+    showToast('✅ サーバー設定を更新しました！', 'ok');
+
+    // Update local state
+    const dg = state.dbGuilds?.find(x => x.guild_id === guildId);
+    if (dg) dg.settings = result.settings;
+  } catch (err) {
+    console.error('[Settings] Save error:', err);
+    showToast('❌ 設定の保存に失敗しました。', 'error');
+  }
+}
+
+function removeGuildSetting(key) {
+  if (!state.selectedGuildId) return;
+  const dg = state.dbGuilds?.find(x => x.guild_id === state.selectedGuildId);
+  if (!dg) return;
+
+  dg.settings[key] = null;
+  renderConfig(dg.settings, dg.permissions);
 }
 
 // Detail log tabs
@@ -495,70 +837,115 @@ document.querySelectorAll('.ltab').forEach(btn => {
 
 function switchLTab(tab) {
   state.activeLTab = tab;
+  localStorage.setItem('activeLTab', tab);
   document.querySelectorAll('.ltab').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.lpane').forEach(p => p.classList.remove('active'));
   document.querySelector(`.ltab[data-ltab="${tab}"]`)?.classList.add('active');
   el(`lpane-${tab}`)?.classList.add('active');
 
-  // Load logs when switching to log panes
-  if (['bot','sys','err'].includes(tab) && state.selectedGuildId) {
+  if (tab === 'bot' && state.selectedGuildId) renderLogsFromCache(state.selectedGuildId, 'bot');
+  if (tab === 'tts' && state.selectedGuildId) renderLogsFromCache(state.selectedGuildId, 'tts');
+  if (tab === 'cmd' && state.selectedGuildId) renderLogsFromCache(state.selectedGuildId, 'cmd');
+  if (tab === 'err' && state.selectedGuildId) renderLogsFromCache(state.selectedGuildId, 'err');
+
+  // Load backend logs for these types
+  if (['bot', 'tts', 'cmd', 'sys', 'err'].includes(tab) && state.selectedGuildId) {
     loadLogsForPane(tab);
   }
 }
 
 async function loadLogsForPane(type) {
+  const key = `${state.selectedGuildId}:${type}`;
+  if (state.logCache.has(key)) {
+    renderLogsFromCache(state.selectedGuildId, type);
+    return;
+  }
+
   const consoleEl = el(`console-${type}`);
   if (!consoleEl) return;
-  consoleEl.innerHTML = '<span style="color:#555">Loading...</span>';
+  consoleEl.innerHTML = '<span style="color:#555">読み込み中...</span>';
+
   const data = await safeFetch(`/api/logs?guildId=${state.selectedGuildId}&type=${type}&limit=100`);
-  consoleEl.innerHTML = '';
-  if (Array.isArray(data) && data.length) {
-    data.forEach(l => appendLog(type, l.message, l.type));
+  if (Array.isArray(data)) {
+    state.logCache.set(key, data.map(l => ({ t: new Date(l.timestamp), message: l.message })));
+    renderLogsFromCache(state.selectedGuildId, type);
   } else {
-    consoleEl.innerHTML = '<span style="color:#555">No logs found.</span>';
+    consoleEl.innerHTML = '<span style="color:#555">ログが見つかりません。</span>';
+  }
+}
+
+async function loadGlobalErrors() {
+  const key = 'global:err';
+  if (state.logCache.has(key)) {
+    renderLogsFromCache('global', 'err');
+    return;
+  }
+
+  const consoleEl = el('global-error-console');
+  if (!consoleEl) return;
+  consoleEl.innerHTML = '<span style="color:#555">読み込み中...</span>';
+
+  const data = await safeFetch('/api/logs?type=err&limit=50');
+  if (Array.isArray(data)) {
+    state.logCache.set(key, data.map(l => ({ t: new Date(l.timestamp), message: l.message })));
+    renderLogsFromCache('global', 'err');
+  } else {
+    consoleEl.innerHTML = '<span style="color:#555">最近のエラーはありません。</span>';
   }
 }
 
 function appendLog(pane, text, type) {
-  const container = el(`console-${pane}`);
-  if (!container) return;
-  const line = document.createElement('span');
-  line.className = 'log-line ' + (type || '');
-  line.textContent = `[${now()}] ${text}`;
-  container.appendChild(line);
-  container.appendChild(document.createElement('br'));
-  // Scroll to bottom
-  container.parentElement?.scroll({ top: 999999, behavior: 'smooth' });
+  // Legacy fallback for stdout stream categorization
+  const gId = state.selectedGuildId || 'global';
+  appendLogToCache(gId, pane, text);
+  if (state.activeLTab === pane) renderLogsFromCache(gId, pane);
 }
 
-// ── Analytics Charts ──────────────────────────────────────────────────────────
+// Activity line chart
 let activityChartInst = null;
 let cmdChartInst = null;
+let currentActivityRange = '24h';
+
+// Range picker listener
+document.querySelectorAll('#graph-range-picker .chip').forEach(chip => {
+  chip.onclick = () => {
+    document.querySelectorAll('#graph-range-picker .chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    currentActivityRange = chip.dataset.range;
+    if (state.selectedGuildId) loadDetailAnalytics(state.selectedGuildId);
+  };
+});
 
 async function loadDetailAnalytics(guildId) {
-  const data = await safeFetch(`/api/analytics?guildId=${guildId}&hours=24`);
+  const hoursMap = { '24h': 24, '7d': 168, '30d': 720 };
+  const hrs = hoursMap[currentActivityRange] || 24;
+  const data = await safeFetch(`/api/analytics?guildId=${guildId}&hours=${hrs}`);
   if (!Array.isArray(data)) return;
 
-  // KPIs — sum of last 24h snapshots
-  const totals = data.reduce((acc, row) => {
-    acc.tts  += row.texts_spoken || 0;
-    acc.ai   += row.ai_queries || 0;
-    acc.users = Math.max(acc.users, row.members_active || 0);
-    const cmds = row.commands_used || {};
-    acc.cmds += Object.values(cmds).reduce((s,v) => s + v, 0);
-    Object.entries(cmds).forEach(([k,v]) => { acc.cmdBreakdown[k] = (acc.cmdBreakdown[k]||0)+v; });
-    return acc;
-  }, { tts:0, ai:0, cmds:0, users:0, cmdBreakdown:{} });
+  // KPIs
+  let totalTts = 0;
+  let totalAi = 0;
+  let totalCmds = 0;
+  let peakUsers = 0;
 
-  el('a-tts').textContent   = totals.tts;
-  el('a-ai').textContent    = totals.ai;
-  el('a-cmds').textContent  = totals.cmds;
-  el('a-users').textContent = totals.users;
+  data.forEach(r => {
+    totalTts += (r.texts_spoken || 0);
+    totalAi += (r.ai_queries || 0);
+    peakUsers = Math.max(peakUsers, r.members_active || 0);
+    Object.values(r.commands_used || {}).forEach(v => {
+      totalCmds += v;
+    });
+  });
+
+  el('a-tts').textContent = totalTts;
+  el('a-ai').textContent = totalAi;
+  el('a-cmds').textContent = totalCmds;
+  el('a-users').textContent = peakUsers;
 
   // Activity line chart
-  const labels = data.map(r => new Date(r.snapshot_at).toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'}));
-  const ttsSeries  = data.map(r => r.texts_spoken||0);
-  const cmdSeries  = data.map(r => Object.values(r.commands_used||{}).reduce((s,v)=>s+v,0));
+  const labels = data.map(r => new Date(r.snapshot_at).toLocaleTimeString('ja', { hour: '2-digit', minute: '2-digit' }));
+  const ttsSeries = data.map(r => r.texts_spoken || 0);
+  const cmdSeries = data.map(r => Object.values(r.commands_used || {}).reduce((s, v) => s + v, 0));
 
   if (activityChartInst) activityChartInst.destroy();
   activityChartInst = new Chart(el('activityChart'), {
@@ -566,19 +953,27 @@ async function loadDetailAnalytics(guildId) {
     data: {
       labels,
       datasets: [
-        { label:'TTS Messages', data:ttsSeries, borderColor:'#4318ff', backgroundColor:'#4318ff22', borderWidth:2, tension:0.4, pointRadius:0, fill:true },
-        { label:'Commands',     data:cmdSeries, borderColor:'#05cd99', backgroundColor:'#05cd9922', borderWidth:2, tension:0.4, pointRadius:0, fill:true },
+        { label: '読み上げメッセージ', data: ttsSeries, borderColor: '#4318ff', backgroundColor: '#4318ff22', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: true },
+        { label: 'コマンド', data: cmdSeries, borderColor: '#05cd99', backgroundColor: '#05cd9922', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: true },
       ]
     },
     options: {
-      responsive:true, maintainAspectRatio:false, animation:false,
-      plugins: { legend: { position:'top', labels:{ font:{size:11}, boxWidth:12 } } },
-      scales: { x:{ticks:{font:{size:9}}}, y:{beginAtZero:true, ticks:{font:{size:10}}} }
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 11 }, boxWidth: 12 } } },
+      scales: { x: { ticks: { font: { size: 9 } } }, y: { beginAtZero: true, ticks: { font: { size: 10 } } } }
     }
   });
 
   // Command breakdown bar chart
-  const cmdKeys = Object.keys(totals.cmdBreakdown).slice(0, 10);
+  const cmdBreakdown = {};
+  data.forEach(r => {
+    Object.entries(r.commands_used || {}).forEach(([k, v]) => {
+      cmdBreakdown[k] = (cmdBreakdown[k] || 0) + v;
+    });
+  });
+  const totals = { cmdBreakdown };
+
+  const cmdKeys = Object.keys(totals.cmdBreakdown).sort((a, b) => totals.cmdBreakdown[b] - totals.cmdBreakdown[a]).slice(0, 10);
   const cmdVals = cmdKeys.map(k => totals.cmdBreakdown[k]);
 
   if (cmdChartInst) cmdChartInst.destroy();
@@ -586,12 +981,12 @@ async function loadDetailAnalytics(guildId) {
     type: 'bar',
     data: {
       labels: cmdKeys.map(k => `/${k}`),
-      datasets: [{ label:'Uses', data:cmdVals, backgroundColor:'#4318ffcc', borderRadius:6 }]
+      datasets: [{ label: '回数', data: cmdVals, backgroundColor: '#4318ffcc', borderRadius: 6 }]
     },
     options: {
-      responsive:true, maintainAspectRatio:false, animation:false,
-      plugins:{ legend:{display:false} },
-      scales:{ x:{ticks:{font:{size:10}}}, y:{beginAtZero:true, ticks:{font:{size:10}}} }
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { ticks: { font: { size: 10 } } }, y: { beginAtZero: true, ticks: { font: { size: 10 } } } }
     }
   });
 }
@@ -602,20 +997,76 @@ function renderConfig(settings, permissions) {
   const permList = el('config-perm-list');
   if (!infoList || !permList) return;
 
-  const settingRows = [
-    ['Chat Mode',     settings.chatMode     ? 'Enabled' : 'Disabled'],
-    ['Read Name',     settings.readName === false ? 'Off' : 'On'],
-    ['Speaker ID',    settings.speakerId || '3'],
-    ['Text Channel',  settings.textChannelId ? `#${settings.textChannelId}` : 'Not set'],
-    ['Announce VC',   settings.announceVoice ? 'Enabled' : 'Disabled'],
-    ['Soundboard',    settings.soundboardMode ? 'Enabled' : 'Disabled'],
-    ['CleanChat',     settings.cleanChatTasks?.[settings.textChannelId] ? `${settings.cleanChatTasks[settings.textChannelId]} min` : 'Off'],
-    ['Music Volume',  settings.karaokeVolume ?? '1.0'],
+  // Render placeholders first
+  const rows = [
+    { key: 'textChannelId', label: 'テキストチャンネル', type: 'select' },
+    { key: 'readName', label: '名前読み上げ', type: 'checkbox' },
+    { key: 'trimWordCount', label: '最大文字数', type: 'number', placeholder: '制限なし' },
+    { key: 'announceVoice', label: '入退室通知 (VC)', type: 'checkbox' },
+    { key: 'speakerId', label: '話者 ID', type: 'select_voice' },
+    { key: 'speed', label: '速度 (Speed)', type: 'number', step: '0.1' },
+    { key: 'pitch', label: 'ピッチ (Pitch)', type: 'number', step: '0.1' },
+    { key: 'volume', label: '音量 (Volume)', type: 'number', step: '0.1' },
+    { key: 'soundboardMode', label: 'サウンドボード', type: 'checkbox' },
+    { key: 'karaokeVolume', label: '音楽音量', type: 'number', step: '0.1' },
   ];
 
-  infoList.innerHTML = settingRows.map(([k,v]) =>
-    `<div class="config-row"><span>${k}</span><span>${v}</span></div>`
-  ).join('');
+  infoList.innerHTML = rows.map(r => {
+    let inputHtml = '';
+    const val = settings[r.key];
+
+    if (r.type === 'checkbox') {
+      inputHtml = `<input type="checkbox" data-key="${r.key}" ${val !== false ? 'checked' : ''}>`;
+    } else if (r.type === 'select') {
+      if (val) {
+        // State A: Set
+        const meta = state.metadataCache[state.selectedGuildId]?.[val];
+        const name = meta?.name || val;
+        inputHtml = `
+          <div class="channel-badge" id="config-badge-${r.key}">
+            <span class="channel-name-text">#${escHtml(name)}</span>
+            <button class="btn-remove-channel" title="解除" onclick="removeGuildSetting('${r.key}')">✕</button>
+            <input type="hidden" data-key="${r.key}" value="${val}">
+          </div>`;
+      } else {
+        // State B: Unset
+        inputHtml = `<select data-key="${r.key}" id="config-select-${r.key}"><option value="">読み込み中...</option></select>`;
+      }
+    } else if (r.type === 'select_voice') {
+      const options = Object.entries(state.voiceNames).map(([id, name]) => 
+        `<option value="${id}" ${Number(id) === Number(val) ? 'selected' : ''}>${escHtml(name)}</option>`
+      ).join('');
+      inputHtml = `<select data-key="${r.key}">${options}</select>`;
+    } else {
+      inputHtml = `<input type="${r.type}" data-key="${r.key}" step="${r.step || '1'}" value="${val ?? ''}" placeholder="${r.placeholder || ''}">`;
+    }
+
+    const isSingleLine = r.type === 'select' && !!val;
+    const label = isSingleLine ? `${r.label}:` : r.label;
+
+    return `<div class="config-row ${isSingleLine ? 'single-line' : ''}"><span>${label}</span><span>${inputHtml}</span></div>`;
+  }).join('');
+
+  // Async: Populate channel dropdown (only if in select state)
+  const select = el('config-select-textChannelId');
+  if (state.selectedGuildId && select) {
+    safeFetch(`/api/guild-channels?guildId=${state.selectedGuildId}`).then(data => {
+      if (!select) return;
+      if (data && Array.isArray(data.channels)) {
+        select.innerHTML = '<option value="">(選択してください)</option>' + data.channels.map(c =>
+          `<option value="${c.id}">#${escHtml(c.name)}</option>`
+        ).join('');
+      } else {
+        select.innerHTML = '<option value="">取得失敗</option>';
+      }
+    });
+  }
+
+  // Add listener for Save Settings button (one-time setup if not already)
+  const saveBtn = el('btn-save-settings');
+  if (saveBtn) {
+    saveBtn.onclick = () => saveGuildSettings(state.selectedGuildId);
+  }
 
   const permObj = (permissions && Object.keys(permissions).length > 0) ? permissions : (settings.permissions || {});
   state.currentPerms = JSON.parse(JSON.stringify(permObj));
@@ -623,25 +1074,32 @@ function renderConfig(settings, permissions) {
   const permEntries = Object.entries(permObj);
   if (permEntries.length) {
     const categories = {
-      '🎮 Basic': [],
-      '🎙️ Voice Settings': [],
-      '🎵 Music & Sound': [],
-      '⚙️ Server Admin': [],
-      '📖 Dictionary & Customs': [],
-      '📦 Other': []
+      '🎮 基本・一般': [],
+      '🎙️ ユーザー設定': [],
+      '🎶 音楽再生': [],
+      '🔒 権限・防衛': [],
+      '🛡️ サーバー管理': [],
+      '⚙️ デフォルト設定': [],
+      '🔊 サウンドボード': [],
+      '📖 辞書・絵文字': [],
+      '📦 その他': []
     };
 
     const mapping = {
-      'join':'🎮 Basic', 'leave':'🎮 Basic', 'help':'🎮 Basic', 'mystatus':'🎮 Basic',
-      'setvoice':'🎙️ Voice Settings', 'voiceparams':'🎙️ Voice Settings', 'readname':'🎙️ Voice Settings', 'chatmode':'🎙️ Voice Settings', 'announce':'🎙️ Voice Settings',
-      'play':'🎵 Music & Sound', 'pause':'🎵 Music & Sound', 'skip':'🎵 Music & Sound', 'queue':'🎵 Music & Sound', 'lyrics':'🎵 Music & Sound', 'musicvolume':'🎵 Music & Sound', 'soundboard':'🎵 Music & Sound',
-      'setchannel':'⚙️ Server Admin', 'permissions':'⚙️ Server Admin', 'serverstatus':'⚙️ Server Admin', 'servervoice':'⚙️ Server Admin', 'servervoiceparams':'⚙️ Server Admin', 'cleanchat':'⚙️ Server Admin', 'trim':'⚙️ Server Admin',
-      'addword':'📖 Dictionary & Customs', 'delword':'📖 Dictionary & Customs', 'listwords':'📖 Dictionary & Customs', 'customsound':'📖 Dictionary & Customs', 'customemoji':'📖 Dictionary & Customs'
+      'vc': '🎮 基本・一般', 'help': '🎮 基本・一般', 'mystatus': '🎮 基本・一般', 'search': '🎮 基本・一般', 'serverstatus': '🎮 基本・一般',
+      'set': '🎙️ ユーザー設定',
+      'readname': '🛡️ サーバー管理', 'announce': '🛡️ サーバー管理', 'trim': '🛡️ サーバー管理',
+      'play': '🎶 音楽再生', 'pause': '🎶 音楽再生', 'skip': '🎶 音楽再生', 'queue': '🎶 音楽再生', 'lyrics': '🎶 音楽再生', 'musicvolume': '🎶 音楽再生', 'loop': '🎶 音楽再生',
+      'soundboard': '🔊 サウンドボード', 'customsound': '🔊 サウンドボード',
+      'customemoji': '📖 辞書・絵文字', 'addword': '📖 辞書・絵文字', 'delword': '📖 辞書・絵文字', 'listwords': '📖 辞書・絵文字',
+      'setchannel': '🛡️ サーバー管理', 'cleanchat': '🛡️ サーバー管理',
+      'set-server': '⚙️ デフォルト設定',
+      'permissions': '🔒 権限・防衛'
     };
 
     permEntries.forEach(([cmd, rules]) => {
       const baseCmd = cmd.split(' ')[0];
-      const cat = mapping[baseCmd] || '📦 Other';
+      const cat = mapping[baseCmd] || '📦 その他';
       categories[cat].push([cmd, rules]);
     });
 
@@ -663,7 +1121,7 @@ function renderConfig(settings, permissions) {
         card.onclick = () => openPermModal(permObj, cmd);
 
         const tagHtml = Object.entries(rules).map(([id, act]) => {
-          const isEveryone = id === state.selectedGuildId;
+          const isEveryone = id === state.selectedGuildId || id === '@everyone' || id === 'everyone';
           if (!isEveryone) resolveList.add(id);
           const meta = state.metadataCache[state.selectedGuildId]?.[id];
           return `<div class="perm-tag ${isEveryone ? 'everyone' : ''} ${act}" data-id="${id}">${isEveryone ? 'Everyone' : (meta ? createTagInnerHtml(id, meta) : `<span style="opacity:0.5">${id.slice(-4)}...</span>`)}</div>`;
@@ -677,11 +1135,11 @@ function renderConfig(settings, permissions) {
     if (resolveList.size > 0) {
       const unknownIds = [...resolveList].filter(id => !state.metadataCache[state.selectedGuildId]?.[id]);
       if (unknownIds.length > 0) {
-        fetch(`/api/resolve-metadata?guildId=${state.selectedGuildId}&ids=${unknownIds.join(',')}`).catch(() => {});
+        fetch(`/api/resolve-metadata?guildId=${state.selectedGuildId}&ids=${unknownIds.join(',')}`).catch(() => { });
       }
     }
   } else {
-    permList.innerHTML = '<div class="config-row"><span>No custom permissions</span></div>';
+    permList.innerHTML = '<div class="config-row"><span>カスタム権限なし</span></div>';
   }
 }
 
@@ -697,26 +1155,39 @@ function createTagInnerHtml(id, meta) {
 }
 
 const ALL_COMMANDS = [
-  'join', 'leave', 'setchannel', 'setvoice', 'voiceparams',
-  'voiceparams speed', 'voiceparams pitch', 'voiceparams volume',
-  'chatmode', 'soundboard', 'serverstatus', 'mystatus', 'help',
-  'addword', 'delword', 'listwords', 'readname', 'announce', 'cleanchat', 'trim',
-  'permissions', 'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume',
-  'servervoice', 'servervoiceparams', 'servervoiceparams speed', 'servervoiceparams pitch', 'servervoiceparams volume',
+  'vc', 'setchannel', 'set voice', 'set speed', 'set pitch', 'set volume',
+  'search', 'soundboard', 'serverstatus', 'mystatus', 'help',
+  'readname', 'announce', 'cleanchat', 'trim',
+  'permissions set', 'permissions list', 'permissions reset',
+  'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume', 'loop',
+  'set-server voice', 'set-server speed', 'set-server pitch', 'set-server volume',
   'customsound add', 'customsound remove', 'customsound list',
-  'customemoji add', 'customemoji remove', 'customemoji list', 'loop'
+  'customemoji add', 'customemoji remove', 'customemoji list'
 ];
+
+const COMMAND_CATEGORIES = {
+  '🎮 基本・一般': ['vc', 'help', 'mystatus', 'search', 'serverstatus'],
+  '🎙️ ユーザー設定': ['set voice', 'set speed', 'set pitch', 'set volume'],
+  '🎶 音楽再生': ['play', 'pause', 'skip', 'loop', 'queue', 'lyrics', 'musicvolume'],
+  '🔒 権限・防衛': ['permissions set', 'permissions list', 'permissions reset'],
+  '🛡️ サーバー管理': ['setchannel', 'cleanchat', 'readname', 'announce', 'trim'],
+  '⚙️ デフォルト設定': ['set-server voice', 'set-server speed', 'set-server pitch', 'set-server volume'],
+  '🔊 サウンドボード': ['soundboard', 'customsound add', 'customsound remove', 'customsound list'],
+  '📖 辞書・絵文字': ['customemoji add', 'customemoji remove', 'customemoji list']
+};
 
 // ── Permission Modal (Two-Panel Redesign) ──────────────────────────────────────
 
 // Guild member+role cache for the currently open guild
 let permModalMembers = [];
-let permModalRoles   = [];
-let permActivePtab   = 'members'; // 'members' | 'roles'
+let permModalRoles = [];
+let permActivePtab = 'members'; // 'members' | 'roles'
 
 function openPermModal(perms, focusCmd) {
-  state.editingPerms = JSON.parse(JSON.stringify(perms || {}));
+  state.originalPermsJson = JSON.stringify(perms || {});
+  state.editingPerms = JSON.parse(state.originalPermsJson);
   state.selectedPermCmd = focusCmd || null;
+  state.selectedPermCategory = null;
 
   // Reset picker tab
   permActivePtab = 'members';
@@ -733,15 +1204,15 @@ function openPermModal(perms, focusCmd) {
   // Load members/roles from bot (async – updates grids when ready)
   if (state.selectedGuildId) {
     permModalMembers = [];
-    permModalRoles   = [];
+    permModalRoles = [];
     fetch(`/api/guild-members-roles?guildId=${state.selectedGuildId}`)
       .then(r => r.json())
       .then(data => {
         if (data && Array.isArray(data.members)) permModalMembers = data.members;
-        if (data && Array.isArray(data.roles))   permModalRoles   = data.roles;
+        if (data && Array.isArray(data.roles)) permModalRoles = data.roles;
         renderPickerGrid();
       })
-      .catch(() => {});
+      .catch(() => { });
   }
 
   // If a command was pre-focused, scroll it into view
@@ -758,36 +1229,59 @@ function renderPermCmdList() {
   if (!container) return;
   const q = (el('perm-cmd-search')?.value || '').toLowerCase();
   container.innerHTML = '';
-  ALL_COMMANDS.filter(cmd => cmd.includes(q)).forEach(cmd => {
-    const rules = state.editingPerms[cmd] || {};
-    const ruleCount = Object.keys(rules).length;
-    const row = document.createElement('div');
-    row.className = 'perm-cmd-row' + (state.selectedPermCmd === cmd ? ' active' : '');
-    row.dataset.cmd = cmd;
-    row.innerHTML = `
-      <span>/${cmd}</span>
-      <span class="perm-rule-badge${ruleCount ? ' has-rules' : ''}">${ruleCount || '—'}</span>
-    `;
-    row.addEventListener('click', () => {
-      state.selectedPermCmd = cmd;
+
+  Object.entries(COMMAND_CATEGORIES).forEach(([catName, cmdList]) => {
+    const filtered = cmdList.filter(cmd => cmd.toLowerCase().includes(q));
+    if (filtered.length === 0) return;
+
+    const catHeader = document.createElement('div');
+    catHeader.className = 'perm-cmd-category-header' + (state.selectedPermCategory === catName ? ' active' : '');
+    catHeader.textContent = catName;
+    catHeader.addEventListener('click', () => {
+      state.selectedPermCategory = catName;
+      state.selectedPermCmd = null;
       renderPermCmdList();
       renderPickerGrid();
       updateSelectedCmdLabel();
     });
-    container.appendChild(row);
+    container.appendChild(catHeader);
+
+    filtered.forEach(cmd => {
+      const rules = state.editingPerms[cmd] || {};
+      const ruleCount = Object.keys(rules).length;
+      const row = document.createElement('div');
+      row.className = 'perm-cmd-row' + (state.selectedPermCmd === cmd ? ' active' : '');
+      row.dataset.cmd = cmd;
+      row.innerHTML = `
+        <span>/${cmd}</span>
+        <span class="perm-rule-badge${ruleCount ? ' has-rules' : ''}">${ruleCount || '—'}</span>
+      `;
+      row.addEventListener('click', () => {
+        state.selectedPermCmd = cmd;
+        state.selectedPermCategory = null;
+        renderPermCmdList();
+        renderPickerGrid();
+        updateSelectedCmdLabel();
+      });
+      container.appendChild(row);
+    });
   });
 }
 
 function updateSelectedCmdLabel() {
   const label = el('perm-selected-cmd-label');
-  const bulk  = el('perm-bulk-actions');
+  const bulk = el('perm-bulk-actions');
   if (!label || !bulk) return;
   if (state.selectedPermCmd) {
-    label.textContent = `Editing: /${state.selectedPermCmd}`;
+    label.textContent = `編集中のコマンド: /${state.selectedPermCmd}`;
+    label.classList.add('active');
+    bulk.style.display = 'flex';
+  } else if (state.selectedPermCategory) {
+    label.textContent = `編集中のカテゴリー: ${state.selectedPermCategory}`;
     label.classList.add('active');
     bulk.style.display = 'flex';
   } else {
-    label.textContent = '← Select a command';
+    label.textContent = '← コマンドまたはカテゴリーを選択するのだ';
     label.classList.remove('active');
     bulk.style.display = 'none';
   }
@@ -796,7 +1290,7 @@ function updateSelectedCmdLabel() {
 function renderPickerGrid() {
   const q = (el('perm-picker-search')?.value || '').toLowerCase();
   renderEntityGrid('members', permModalMembers.filter(m => m.name.toLowerCase().includes(q)));
-  renderEntityGrid('roles',   permModalRoles.filter(r => r.name.toLowerCase().includes(q)));
+  renderEntityGrid('roles', permModalRoles.filter(r => r.name.toLowerCase().includes(q)));
 }
 
 function renderEntityGrid(type, items) {
@@ -805,7 +1299,7 @@ function renderEntityGrid(type, items) {
   if (!grid) return;
 
   if (items.length === 0) {
-    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);font-size:13px;padding:24px;">${state.selectedGuildId ? (permModalMembers.length === 0 && type === 'members' ? 'Loading…' : 'No results') : 'Select a server first'}</div>`;
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);font-size:13px;padding:24px;">${state.selectedGuildId ? (permModalMembers.length === 0 && type === 'members' ? '読み込み中…' : '結果なし') : '先にサーバーを選択してほしいのだ'}</div>`;
     return;
   }
 
@@ -813,7 +1307,17 @@ function renderEntityGrid(type, items) {
   items.forEach(item => {
     const id = item.id;
     const cmd = state.selectedPermCmd;
-    const currentState = cmd ? (state.editingPerms[cmd]?.[id] || null) : null;
+    const cat = state.selectedPermCategory;
+
+    let currentState = null;
+    if (cmd) {
+      currentState = state.editingPerms[cmd]?.[id] || null;
+    } else if (cat) {
+      const cmds = COMMAND_CATEGORIES[cat] || [];
+      const states = cmds.map(c => state.editingPerms[c]?.[id] || null);
+      if (states.every(s => s === states[0])) currentState = states[0];
+      else currentState = 'mixed';
+    }
 
     const card = document.createElement('div');
     card.className = 'perm-entity-card' + (currentState === 'allow' ? ' state-allow' : currentState === 'deny' ? ' state-deny' : '');
@@ -828,8 +1332,8 @@ function renderEntityGrid(type, items) {
       avatarHtml = `<div class="perm-entity-avatar role-av" style="background:${color}">${escHtml(item.name[0]?.toUpperCase() || '?')}</div>`;
     }
 
-    const stateLabel = currentState === 'allow' ? 'Allow' : currentState === 'deny' ? 'Deny' : 'None';
-    const stateClass = currentState === 'allow' ? 'st-allow' : currentState === 'deny' ? 'st-deny' : 'st-none';
+    const stateLabel = currentState === 'allow' ? '許可' : currentState === 'deny' ? '拒否' : (currentState === 'mixed' ? '混合' : 'なし');
+    const stateClass = currentState === 'allow' ? 'st-allow' : currentState === 'deny' ? 'st-deny' : (currentState === 'mixed' ? 'st-pending' : 'st-none');
 
     card.innerHTML = `
       ${avatarHtml}
@@ -838,22 +1342,41 @@ function renderEntityGrid(type, items) {
     `;
 
     card.addEventListener('click', () => {
-      if (!state.selectedPermCmd) {
-        showToast('← First select a command on the left', 'pending');
+      if (!state.selectedPermCmd && !state.selectedPermCategory) {
+        showToast('← 先に左側でコマンドかカテゴリーを選択してほしいのだ', 'pending');
         return;
       }
-      // Cycle: none → allow → deny → none
-      const cur = state.editingPerms[state.selectedPermCmd]?.[id] || null;
-      if (!state.editingPerms[state.selectedPermCmd]) state.editingPerms[state.selectedPermCmd] = {};
-      if (cur === null)    state.editingPerms[state.selectedPermCmd][id] = 'allow';
-      else if (cur === 'allow') state.editingPerms[state.selectedPermCmd][id] = 'deny';
-      else {
-        // none — remove rule
-        delete state.editingPerms[state.selectedPermCmd][id];
-        if (Object.keys(state.editingPerms[state.selectedPermCmd]).length === 0) {
-          delete state.editingPerms[state.selectedPermCmd];
-        }
+
+      const cmds = state.selectedPermCmd ? [state.selectedPermCmd] : COMMAND_CATEGORIES[state.selectedPermCategory];
+
+      // Get current state for cycling
+      let cur;
+      if (state.selectedPermCmd) {
+        cur = state.editingPerms[state.selectedPermCmd]?.[id] || null;
+      } else {
+        // For category, if mixed or any are different, cycle starts from first command's state
+        cur = state.editingPerms[cmds[0]]?.[id] || null;
+        // If it's mixed, let's just default to 'allow' as first click
+        const states = cmds.map(c => state.editingPerms[c]?.[id] || null);
+        if (!states.every(s => s === states[0])) cur = 'mixed';
       }
+
+      let next;
+      if (cur === null) next = 'allow';
+      else if (cur === 'allow') next = 'deny';
+      else if (cur === 'deny') next = null;
+      else next = 'allow'; // from mixed to allow
+
+      cmds.forEach(c => {
+        if (!state.editingPerms[c]) state.editingPerms[c] = {};
+        if (next === null) {
+          delete state.editingPerms[c][id];
+          if (Object.keys(state.editingPerms[c]).length === 0) delete state.editingPerms[c];
+        } else {
+          state.editingPerms[c][id] = next;
+        }
+      });
+
       renderPermCmdList();
       renderPickerGrid();
     });
@@ -868,30 +1391,42 @@ document.querySelectorAll('.perm-ptab').forEach(tab => {
     permActivePtab = tab.dataset.ptab;
     document.querySelectorAll('.perm-ptab').forEach(t => t.classList.toggle('active', t === tab));
     el('perm-members-grid').style.display = permActivePtab === 'members' ? '' : 'none';
-    el('perm-roles-grid').style.display   = permActivePtab === 'roles'   ? '' : 'none';
+    el('perm-roles-grid').style.display = permActivePtab === 'roles' ? '' : 'none';
   });
 });
 
-el('perm-cmd-search').oninput   = renderPermCmdList;
+el('perm-cmd-search').oninput = renderPermCmdList;
 el('perm-picker-search').oninput = renderPickerGrid;
 
-el('btn-close-perms').onclick  = () => el('perm-modal').style.display = 'none';
-el('btn-cancel-perms').onclick = () => el('perm-modal').style.display = 'none';
-el('btn-save-perms').onclick   = savePermissions;
+el('btn-close-perms').onclick = closePermModal;
+el('btn-cancel-perms').onclick = closePermModal;
+
+function closePermModal() {
+  if (JSON.stringify(state.editingPerms) !== state.originalPermsJson) {
+    if (!confirm('保存されていない変更があります。破棄して閉じますか？')) return;
+  }
+  el('perm-modal').style.display = 'none';
+}
+el('btn-save-perms').onclick = savePermissions;
 
 el('btn-perm-allow-all').onclick = () => setBulkPermission('allow');
-el('btn-perm-deny-all').onclick  = () => setBulkPermission('deny');
+el('btn-perm-deny-all').onclick = () => setBulkPermission('deny');
 
 function setBulkPermission(action) {
-  if (!state.selectedPermCmd || !state.selectedGuildId) return;
-  state.editingPerms[state.selectedPermCmd] = { [state.selectedGuildId]: action };
+  if ((!state.selectedPermCmd && !state.selectedPermCategory) || !state.selectedGuildId) return;
+  const cmds = state.selectedPermCmd ? [state.selectedPermCmd] : COMMAND_CATEGORIES[state.selectedPermCategory];
+
+  cmds.forEach(c => {
+    state.editingPerms[c] = { [state.selectedGuildId]: action };
+  });
+
   renderPermCmdList();
   renderPickerGrid();
-  showToast(`✅ Set /${state.selectedPermCmd} to ${action} all`, 'ok');
+  showToast(`✅ ${state.selectedPermCmd ? '/' + state.selectedPermCmd : state.selectedPermCategory} を全員 ${action === 'allow' ? '許可' : '拒否'} に設定しました`, 'ok');
 }
 
 async function savePermissions() {
-  showToast('💾 Saving permissions...', 'pending');
+  showToast('💾 権限を保存中...', 'pending');
   try {
     const res = await fetch('/api/permissions', {
       method: 'POST',
@@ -899,15 +1434,18 @@ async function savePermissions() {
       body: JSON.stringify({ guildId: state.selectedGuildId, permissions: state.editingPerms })
     });
     if (!res.ok) throw new Error('Save failed');
-    showToast('✅ Permissions updated!', 'ok');
+    const result = await res.json();
+    showToast('✅ 権限を更新しました！', 'ok');
     el('perm-modal').style.display = 'none';
 
     const dg = state.dbGuilds.find(g => g.guild_id === state.selectedGuildId);
-
-    if (dg) dg.permissions = state.editingPerms;
-    renderConfig(dg.settings || {}, state.editingPerms);
+    if (dg) {
+      dg.permissions = result.permissions || state.editingPerms;
+      state.originalPermsJson = JSON.stringify(dg.permissions);
+    }
+    renderConfig(dg?.settings || {}, dg?.permissions || state.editingPerms);
   } catch (err) {
-    showToast('❌ Failed to save permissions.', 'error');
+    showToast('❌ 権限の保存に失敗しました。', 'error');
   }
 }
 
@@ -916,7 +1454,11 @@ function pushError(msg) {
   state.errors.push({ msg, time: now() });
   // Badge
   const badge = el('notif-badge');
-  if (badge) { badge.textContent = state.errors.length; badge.style.display = 'flex'; }
+  if (badge && state.activeTab !== 'tab-account') {
+    badge.textContent = state.errors.length;
+    badge.style.display = 'flex';
+    badge.classList.add('has-new');
+  }
   // Account tab list
   const list = el('notif-list');
   if (!list) return;
@@ -931,7 +1473,7 @@ function pushError(msg) {
 
 // ── Control Buttons ───────────────────────────────────────────────────────────
 el('btn-restart')?.addEventListener('click', () => {
-  if (confirm('Restart the bot ecosystem? This will also clear the current error dashboard.')) {
+  if (confirm('ボットエコシステムを再起動しますか？現在のエラーダッシュボードもクリアされます。')) {
     socket.emit('restart_bot');
     // Clear local error state
     state.errors = [];
@@ -939,22 +1481,29 @@ el('btn-restart')?.addEventListener('click', () => {
     if (badge) { badge.textContent = '0'; badge.style.display = 'none'; }
     const list = el('notif-list');
     if (list) {
-      list.innerHTML = '<p class="notif-empty">No errors recorded.</p>';
+      list.innerHTML = '<p class="notif-empty">エラーログはありません。</p>';
     }
     el('kpi-errors').textContent = '0';
-    showToast('↺ Restarting & Clearing logs…', 'pending');
+    showToast('↺ 再起動してログをクリア中…', 'pending');
   }
 });
-el('btn-stop')?.addEventListener('click',    () => { socket.emit('stop_bot');    showToast('⏹ Stop requested…', 'pending'); });
-el('btn-kill-all')?.addEventListener('click',() => { if(confirm('Kill all services?')) { socket.emit('kill_all'); showToast('⏻ Shutting down…', 'pending'); } });
+el('btn-stop')?.addEventListener('click', () => { socket.emit('stop_bot'); showToast('⏹ 停止をリクエストしました…', 'pending'); });
+el('btn-kill-all')?.addEventListener('click', () => { if (confirm('全サービスを終了しますか？')) { socket.emit('kill_all'); showToast('⏻ シャットダウン中…', 'pending'); } });
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 function escHtml(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function getSessionCommandsForGuild(guildId) {
+  const g = state.guilds.find(x => x.id === guildId);
+  return g ? (g.cmdCount || 0) : 0;
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 setupNav();
+const initialTab = localStorage.getItem('activeTab') || 'tab-dashboard';
+switchTab(initialTab);
 initCharts();
 
 // Load recent global logs for boot
@@ -965,6 +1514,3 @@ safeFetch('/api/logs?limit=30').then(logs => {
     });
   }
 });
-
-// Load commands usage for the Commands tab
-loadGlobalCommandsUsage();

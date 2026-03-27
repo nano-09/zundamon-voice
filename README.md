@@ -14,7 +14,6 @@ Discordのボイスチャンネルで**ずんだもん**と直接おしゃべり
 | 🤖 AI音声会話 | ボイスチャンネルで話しかけると、ずんだもんがAIで考えて声で返事 |
 | 🌐 Web検索 (MCP) | MCP open-websearch で最新のネット情報を検索して回答 |
 | 🎤 ユーザー別の声設定 | ユーザーごとに話者IDと音声パラメータ（速度・ピッチ・音量）を記憶 |
-| 📖 音声認識の辞書補正 | Whisperが誤認識するゲーム名や固有名詞を自動修正 |
 | 🧹 自動チャット削除 | 指定した時間ごとにチャンネルのメッセージを自動クリーンアップ |
 | 😭 絵文字の読み上げ | 絵文字を日本語の感情表現に変換して読み上げ |
 | 🎵 カラオケモード | YouTubeから音楽を再生・歌詞表示。`/play` で自動オン、終了で自動オフ |
@@ -167,9 +166,9 @@ C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -out:StartZundamon.exe L
 ### 基本操作
 | コマンド | 説明 |
 |---------|------|
-| `/join` | ボイスチャンネルにずんだもんを呼ぶ |
-| `/leave` | ボイスチャンネルから退出 |
+| `/vc` | ボイスチャンネルに接続・移動・退出（トグルのように動作） |
 | `/setchannel <チャンネル>` | テキスト読み上げの対象チャンネルを設定 |
+| `/search <テキスト>` | ウェブ検索してずんだもんがテキストで答える |
 | `/serverstatus` | サーバーの設定と接続状態を確認 |
 | `/mystatus` | あなた個人の声の設定を確認 |
 | `/help` | コマンド一覧を表示 |
@@ -177,10 +176,10 @@ C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -out:StartZundamon.exe L
 ### 声の設定 / サーバー設定
 | コマンド | 説明 |
 |---------|------|
-| `/setvoice <話者ID>` | 自分専用の声を設定（ユーザーごとに記憶） |
-| `/servervoice <ID>` | サーバー全体のデフォルトの声を指定 |
-| `/voiceparams [s] [p] [v]` | あなた専用の速度・ピッチ・音量を設定 |
-| `/servervoiceparams` | サーバー全体のデフォルト音声パラメータを指定 |
+| `/set voice <ID>` | 自分専用の声を設定（ユーザーごとに記憶） |
+| `/set <speed/pitch/volume>` | 自分専用の音声パラメータを個別に設定 |
+| `/set-server voice <ID>` | サーバー全体のデフォルトの声を指定 |
+| `/set-server <speed/pitch/volume>` | サーバー全体のデフォルト音声パラメータを個別に設定 |
 | `/readname <True/False>` | 発言者の名前を読み上げるかどうか |
 | `/announce <True/False>` | ボイスチャンネルの入退室を読み上げるかどうか |
 | `/trim <文字数>` | 読み上げる最大文字数を設定（0=無効） |
@@ -188,19 +187,6 @@ C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -out:StartZundamon.exe L
 | `/customsound <add/rem/list>`| サーバー固有のサウンドボード音源を直接アップロード管理 |
 | `/customemoji <add/rem/list>`| サーバー固有の絵文字読み上げ（文字変換）辞書を管理 |
 
-### AI会話
-| コマンド | 説明 |
-|---------|------|
-| `/chatmode <True/False>` | AI音声会話モードのオン/オフ |
-
-### 音声認識の辞書機能
-| コマンド | 説明 |
-|---------|------|
-| `/addword <誤った言葉> <正しい言葉>` | Whisperの誤認識を修正する辞書を登録 |
-| `/delword <誤った言葉>` | 辞書からルールを削除 |
-| `/listwords` | 登録済みの辞書を一覧表示 |
-
-**使用例：** Whisperが「ホヨバース」と認識する → `/addword wrong:ホヨバース correct:HoYoverse` → 以後、正しいスペルで認識されるようになる
 
 ### カラオケモード（音楽再生）
 > 🔸 カラオケモードは `/play` を使うと自動的にオンになり、キューが空になると自動的にオフに戻ります。
@@ -288,7 +274,7 @@ zundamon-voice/
 | コマンドが Discord に表示されない | `node deploy-commands.js` を実行してコマンドを登録 |
 | Message Content Intent エラー | Developer Portal でBot設定の Intent をオンにする |
 | VOICEVOX接続エラー | VOICEVOXアプリが起動していることを確認（port 50021） |
-| Whisperが固有名詞を間違える | `/addword` で辞書登録するか、AIが自動補正を試みます |
+| Whisperが固有名詞を間違える | AIが自動で文脈から補正を試みます |
 | YouTube音楽が再生されない | `yt-dlp` がインストールされており、PATHが通っていることを確認 |
 | AI会話モードが起動しない | Ollamaが起動していることを確認（`ollama serve`） |
 | 新しいサーバーで使えない | オーナーへの2FAメールが届いているか確認し、リンクを承認する |

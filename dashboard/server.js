@@ -8,6 +8,7 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
+import { DEFAULT_PERMISSIONS, DEFAULT_SETTINGS } from '../src/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -41,6 +42,20 @@ app.get('/api/logs', async (req, res) => {
   }
 });
 
+// Clear all error logs from database
+app.post('/api/logs/clear', async (req, res) => {
+  const { type } = req.body;
+  if (type !== 'err') return res.status(400).json({ error: 'Only error logs can be cleared currently.' });
+  try {
+    const { error } = await supabase.from('logs_v2').delete().eq('type', 'err');
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[API] Error clearing logs:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Fetch guild meta (name, permissions, settings, status)
 app.get('/api/guild-meta', async (req, res) => {
   const { guildId } = req.query;
@@ -53,53 +68,17 @@ app.get('/api/guild-meta', async (req, res) => {
       .single();
 
     if (error && error.code !== 'PGRST116') throw error;
-    res.json(data || {});
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-
-// Fetch command usage analytics
-app.get('/api/usage', async (req, res) => {
-  const { guildId } = req.query;
-  if (!guildId) return res.status(400).json({ error: 'guildId required' });
-  try {
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data, error } = await supabase
-      .from('command_usage')
-      .select('command_name, timestamp')
-      .eq('guild_id', guildId)
-      .gte('timestamp', twentyFourHoursAgo);
-
-    if (error) throw error;
-    res.json(Array.isArray(data) ? data : []);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Fetch absolute global command usage across all servers
-app.get('/api/global-commands', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('command_usage')
-      .select('command_name');
-
-    if (error) throw error;
-
-    const counts = {};
-    for (const row of Array.isArray(data) ? data : []) {
-      const name = row.command_name;
-      if (name) counts[name] = (counts[name] || 0) + 1;
+    const finalData = data || {};
+    finalData.settings = { ...DEFAULT_SETTINGS, ...(finalData.settings || {}) };
+    if (!finalData.permissions || Object.keys(finalData.permissions).length === 0) {
+      finalData.permissions = DEFAULT_PERMISSIONS;
     }
-    res.json(counts);
+    res.json(finalData);
   } catch (err) {
-    console.error('[API] /api/global-commands error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // Fetch ALL guilds for the server gallery
 app.get('/api/guilds', async (req, res) => {
@@ -110,7 +89,14 @@ app.get('/api/guilds', async (req, res) => {
       .order('name', { ascending: true });
 
     if (error) throw error;
-    res.json(Array.isArray(data) ? data : []);
+    const guilds = Array.isArray(data) ? data : [];
+    guilds.forEach(g => {
+      g.settings = { ...DEFAULT_SETTINGS, ...(g.settings || {}) };
+      if (!g.permissions || Object.keys(g.permissions).length === 0) {
+        g.permissions = DEFAULT_PERMISSIONS;
+      }
+    });
+    res.json(guilds);
   } catch (err) {
     console.error('[API] /api/guilds error:', err.message);
     res.status(500).json({ error: err.message });
@@ -149,22 +135,74 @@ app.get('/api/resolve-metadata', async (req, res) => {
   res.status(503).json({ error: 'Bot not running' });
 });
 
+// Fetch all text channels for a guild (proxied via bot IPC)
+app.get('/api/guild-channels', async (req, res) => {
+  const { guildId } = req.query;
+  if (!guildId) return res.status(400).json({ error: 'guildId required' });
+  if (!botProcess || !botProcess.stdin.writable) {
+    return res.status(503).json({ error: 'Bot process not running.' });
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingChannels.delete(guildId);
+      res.status(504).json({ error: 'Bot did not respond in time.' });
+      resolve();
+    }, 6000);
+    pendingChannels.set(guildId, {
+      resolve: (data) => { res.json(data); resolve(); },
+      timeout,
+    });
+    botProcess.stdin.write(`LIST_CHANNELS:${guildId}\n`);
+  });
+});
+
 // Save permissions for a guild
 app.post('/api/permissions', async (req, res) => {
   const { guildId, permissions } = req.body;
   if (!guildId) return res.status(400).json({ error: 'guildId required' });
   try {
+    const finalPerms = (permissions && Object.keys(permissions).length > 0) ? permissions : DEFAULT_PERMISSIONS;
+    console.log(`[API] Saving permissions for ${guildId}:`, Object.keys(finalPerms).length, 'commands');
     const { error } = await supabase
       .from('guild_configs')
-      .update({ permissions: permissions || {} })
+      .update({ permissions: finalPerms })
       .eq('guild_id', guildId);
     if (error) throw error;
     if (botProcess && botProcess.stdin.writable) {
       botProcess.stdin.write(`SYNC_CONFIG:${guildId}\n`);
     }
-    res.json({ ok: true });
+    res.json({ ok: true, permissions: finalPerms });
   } catch (err) {
     console.error('[API] /api/permissions error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save general settings for a guild
+app.post('/api/settings', async (req, res) => {
+  const { guildId, settings } = req.body;
+  if (!guildId || !settings) return res.status(400).json({ error: 'guildId and settings required' });
+  try {
+    // Merge with existing settings to avoid overwriting unrelated fields
+    const { data: existing } = await supabase
+      .from('guild_configs').select('settings').eq('guild_id', guildId).single();
+    
+    const mergedSettings = { ...(existing?.settings || {}), ...settings };
+    
+    const { error } = await supabase
+      .from('guild_configs')
+      .update({ settings: mergedSettings })
+      .eq('guild_id', guildId);
+      
+    if (error) throw error;
+    
+    if (botProcess && botProcess.stdin.writable) {
+      botProcess.stdin.write(`SYNC_CONFIG:${guildId}\n`);
+    }
+    
+    res.json({ ok: true, settings: mergedSettings });
+  } catch (err) {
+    console.error('[API] /api/settings error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -218,15 +256,36 @@ app.get('/api/analytics', async (req, res) => {
 let botProcess = null;
 // Pending one-shot callbacks for LIST_MEMBERS_ROLES responses
 const pendingMembersRoles = new Map(); // guildId -> { resolve, timeout }
+const pendingChannels     = new Map(); // guildId -> { resolve, timeout }
 let latestBotStats = { guilds: '-', channels: '-', ping: '-', uptime: '-', user: null };
+let ownerEmailCache = 'Not set';
 let messageCount = 0;
+
+// Fetch owner email from Supabase table at startup
+async function fetchOwnerEmail() {
+  try {
+    const { data, error } = await supabase
+      .from('bot_secrets')
+      .select('value')
+      .eq('name', 'OWNER_EMAIL')
+      .single();
+    if (error) throw error;
+    if (data) {
+      ownerEmailCache = data.value;
+      console.log('[Dashboard] Owner email fetched from Supabase:', ownerEmailCache);
+    }
+  } catch (err) {
+    console.error('[Dashboard] Failed to fetch owner email from Supabase:', err.message);
+  }
+}
+fetchOwnerEmail();
 
 // ═══ HELPERS ═══
 function formatUptime(ms) {
   const s = Math.floor(ms / 1000);
   const h = String(Math.floor(s / 3600)).padStart(2, '0');
   const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-  return `${h}h ${m}m`;
+  return `${h}時間 ${m}分`;
 }
 
 let lastCpuInfo = null;
@@ -276,7 +335,12 @@ function startBot() {
     // Classify log type
     let logType = 'bot';
     if (cleanText.includes('[SYS]') || cleanText.includes('[2FA]') || cleanText.includes('[Config]')) logType = 'sys';
-    if (cleanText.includes('[ERROR]') || cleanText.includes('❌')) logType = 'err';
+    if (cleanText.includes('[ERROR]') || cleanText.includes('❌') || cleanText.startsWith('[ERR]')) logType = 'err';
+    if (cleanText.includes('[TTS]')) logType = 'tts';
+    if (cleanText.includes('[CMD]')) logType = 'cmd';
+
+    // Filter out noisy voice state changes
+    if (cleanText.includes('[VOICE] State:')) return;
 
     io.emit('log', { text: cleanText, guildId, type: logType });
 
@@ -295,6 +359,13 @@ function startBot() {
       } catch (e) {}
     }
 
+    if (cleanText.includes('[SNAPSHOT]')) {
+      try {
+        const snap = JSON.parse(cleanText.split('[SNAPSHOT]')[1].trim());
+        io.emit('snapshot_update', snap);
+      } catch (e) {}
+    }
+
     if (cleanText.includes('[MEMBERS_ROLES]')) {
       try {
         const payload = JSON.parse(cleanText.split('[MEMBERS_ROLES]')[1].trim());
@@ -309,6 +380,20 @@ function startBot() {
         console.error('[DASHBOARD] Failed to parse [MEMBERS_ROLES]:', e.message);
       }
     }
+    
+    if (cleanText.includes('[CHANNELS]')) {
+      try {
+        const payload = JSON.parse(cleanText.split('[CHANNELS]')[1].trim());
+        const pending = pendingChannels.get(payload.guildId);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          pendingChannels.delete(payload.guildId);
+          pending.resolve(payload);
+        }
+      } catch (e) {
+        console.error('[DASHBOARD] Failed to parse [CHANNELS]:', e.message);
+      }
+    }
 
     if (cleanText.includes('[GUILD_ADDED]')) {
       const gId = cleanText.split('[GUILD_ADDED]')[1].trim();
@@ -318,6 +403,13 @@ function startBot() {
     if (cleanText.includes('[GUILD_REMOVED]')) {
       const gId = cleanText.split('[GUILD_REMOVED]')[1].trim();
       io.emit('guild_removed', { guildId: gId });
+    }
+
+    if (cleanText.includes('[CONFIG_UPDATED]')) {
+      try {
+        const payload = JSON.parse(cleanText.split('[CONFIG_UPDATED]')[1].trim());
+        io.emit('config_updated', payload);
+      } catch (e) {}
     }
   });
 
@@ -329,9 +421,9 @@ function startBot() {
   });
 
   botProcess.on('close', (code) => {
-    io.emit('log', { text: `[SYS] Bot exited code ${code}`, type: 'sys' });
+    io.emit('log', { text: `[SYS] ボットが終了しました (コード ${code})`, type: 'sys' });
     botProcess = null;
-    io.emit('stats_update', { type: 'HEARTBEAT', status: 'Idle', guilds: 0, uptime: 0, ping: 0 }); // Clear stats
+    io.emit('stats_update', { type: 'HEARTBEAT', status: '待機中', guilds: 0, uptime: 0, ping: 0 }); // Clear stats
   });
 }
 
@@ -349,22 +441,22 @@ function stopBot() {
 // ═══ SOCKET ═══
 io.on('connection', (socket) => {
   // Send current service status on connect
-  socket.emit('action_response', { action: 'connected', status: 'ok', message: 'Dashboard connected.' });
+  socket.emit('action_response', { action: 'connected', status: 'ok', message: 'ダッシュボードが接続されました。' });
 
   socket.on('start_bot', () => {
     startBot();
-    io.emit('action_response', { action: 'start_bot', status: 'ok', message: '✅ Bot started.' });
+    io.emit('action_response', { action: 'start_bot', status: 'ok', message: '✅ ボットを起動しました。' });
   });
   socket.on('stop_bot', () => {
     stopBot();
-    io.emit('action_response', { action: 'stop_bot', status: 'ok', message: '⏹ Bot stopped.' });
+    io.emit('action_response', { action: 'stop_bot', status: 'ok', message: '⏹ ボットを停止しました。' });
   });
   socket.on('restart_bot', () => {
-    io.emit('action_response', { action: 'restart_bot', status: 'pending', message: '↺ Restarting bot...' });
+    io.emit('action_response', { action: 'restart_bot', status: 'pending', message: '↺ ボットを再起動中...' });
     
     if (!botProcess) {
       startBot();
-      io.emit('action_response', { action: 'restart_bot', status: 'ok', message: '✅ Bot restarted.' });
+      io.emit('action_response', { action: 'restart_bot', status: 'ok', message: '✅ ボットを再起動しました。' });
       return;
     }
 
@@ -372,7 +464,7 @@ io.on('connection', (socket) => {
     oldProcess.once('close', () => {
       setTimeout(() => {
         startBot();
-        io.emit('action_response', { action: 'restart_bot', status: 'ok', message: '✅ Bot restarted.' });
+        io.emit('action_response', { action: 'restart_bot', status: 'ok', message: '✅ ボットを再起動しました。' });
       }, 500);
     });
 
@@ -380,7 +472,7 @@ io.on('connection', (socket) => {
   });
   socket.on('kill_all', () => {
     io.emit('system_shutdown');
-    io.emit('action_response', { action: 'kill_all', status: 'pending', message: '⏻ Shutting down ecosystem...' });
+    io.emit('action_response', { action: 'kill_all', status: 'pending', message: '⏻ エコシステムを終了中...' });
     spawn('cmd.exe', ['/c', 'ShutdownZundamon.bat'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
     setTimeout(() => process.exit(0), 1500);
   });
@@ -388,14 +480,14 @@ io.on('connection', (socket) => {
   socket.on('shutdown_all', () => socket.emit('kill_all'));
 
   socket.on('leave_guild', ({ guildId }) => {
-    io.emit('action_response', { action: 'leave_guild', status: 'pending', message: `🚪 Leaving guild ${guildId}...` });
+    io.emit('action_response', { action: 'leave_guild', status: 'pending', message: `🚪 サーバー ${guildId} から退出中...` });
     if (botProcess && botProcess.stdin.writable) {
       botProcess.stdin.write(`LEAVE_GUILD:${guildId}\n`);
       setTimeout(() => {
-        io.emit('action_response', { action: 'leave_guild', status: 'ok', message: `✅ Left guild ${guildId}.` });
+        io.emit('action_response', { action: 'leave_guild', status: 'ok', message: `✅ サーバー ${guildId} から退出しました。` });
       }, 2000);
     } else {
-      io.emit('action_response', { action: 'leave_guild', status: 'error', message: `❌ Bot is not running.` });
+      io.emit('action_response', { action: 'leave_guild', status: 'error', message: `❌ ボットが起動していません。` });
     }
   });
 });
@@ -429,6 +521,10 @@ setInterval(() => {
     guilds: latestBotStats.guilds,
     ping: latestBotStats.ping,
     user: latestBotStats.user,
+    owner: {
+      ...latestBotStats.owner,
+      email: ownerEmailCache
+    },
     guildsDetail: latestBotStats.guildsDetail
   });
 }, 3000);

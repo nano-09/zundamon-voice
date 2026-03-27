@@ -2,18 +2,20 @@
 // Defines all slash command handlers
 
 import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder } from 'discord.js';
-import { joinChannel, leaveChannel, isConnected, enqueue, pauseMusic, skipMusic, enqueueMusic, getQueue, setLoopMode } from './player.js';
+import { joinChannel, leaveChannel, isConnected, enqueue, pauseMusic, skipMusic, enqueueMusic, getQueue, setLoopMode, subscribeToMusic } from './player.js';
 import { getGuildConfig, setGuildConfig, updateGuildMeta, getFullGuildConfig } from './config.js';
-import { preloadWhisper, isWhisperReady, onWhisperReady, cancelAiGeneration } from './ai.js';
+import { cancelAiGeneration, processSearchCommand } from './ai.js';
 import { isGuildAuthorized, isGuildBlocked } from './auth.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { pipeline } from 'stream/promises';
 import axios from 'axios';
-import supabase from './db_supabase.js';
-import { incrementCommand } from './index.js';
-import { trackCommandExecution } from './db_supabase.js';
+import ytExec from 'youtube-dl-exec';
+import ytSearch from 'yt-search';
+import supabase, { logToSupabase } from './db_supabase.js';
+import { incrementCommand } from './stats.js';
+import { DEFAULT_PERMISSIONS } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,12 +23,16 @@ const SOUNDS_DIR = path.join(__dirname, '..', 'sounds');
 
 export const commandDefinitions = [
   new SlashCommandBuilder()
-    .setName('join')
-    .setDescription('ずんだもんがあなたのボイスチャンネルに参加します'),
+    .setName('vc')
+    .setDescription('ボイスチャンネルへの参加・退出・移動を切り替えるのだ'),
 
   new SlashCommandBuilder()
-    .setName('leave')
-    .setDescription('ずんだもんがボイスチャンネルから退出します'),
+    .setName('set')
+    .setDescription('あなた個人の声の設定（話者、速度、ピッチ、音量）を変更するのだ')
+    .addSubcommand(sub => sub.setName('voice').setDescription('話者（ボイスID）を設定するのだ').addIntegerOption(opt => opt.setName('voiceid').setDescription('話者名を選択してください').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub.setName('speed').setDescription('速度を設定するのだ').addNumberOption(opt => opt.setName('value').setDescription('速度 (標準: 1.0)').setRequired(true)))
+    .addSubcommand(sub => sub.setName('pitch').setDescription('ピッチを設定するのだ').addNumberOption(opt => opt.setName('value').setDescription('ピッチ (標準: 0.0)').setRequired(true)))
+    .addSubcommand(sub => sub.setName('volume').setDescription('音量を設定するのだ').addNumberOption(opt => opt.setName('value').setDescription('音量 (標準: 1.0)').setRequired(true))),
 
   new SlashCommandBuilder()
     .setName('setchannel')
@@ -39,27 +45,9 @@ export const commandDefinitions = [
     ),
 
   new SlashCommandBuilder()
-    .setName('setvoice')
-    .setDescription('読み上げる声（話者）を設定します')
-    .addIntegerOption((opt) =>
-      opt
-        .setName('voiceid')
-        .setDescription('話者名を選択してください')
-        .setRequired(true)
-        .setAutocomplete(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('voiceparams')
-    .setDescription('あなた専用の声のオプション（速度、ピッチ、音量）を設定します')
-    .addNumberOption((opt) => opt.setName('speed').setDescription('速度 (標準: 1.0)'))
-    .addNumberOption((opt) => opt.setName('pitch').setDescription('ピッチ (標準: 0.0)'))
-    .addNumberOption((opt) => opt.setName('volume').setDescription('音量 (標準: 1.0)')),
-
-  new SlashCommandBuilder()
-    .setName('chatmode')
-    .setDescription('AIによる書き起こし＋自然会話モードを切り替えます')
-    .addBooleanOption((opt) => opt.setName('enabled').setDescription('有効にする (True) または 無効にする (False)').setRequired(true)),
+    .setName('search')
+    .setDescription('ウェブ検索してずんだもんが答えるのだ（読み上げはしないのだ）')
+    .addStringOption(opt => opt.setName('text').setDescription('調べたい内容を入力してほしいのだ').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('serverstatus')
@@ -100,20 +88,6 @@ export const commandDefinitions = [
     .setDescription('ボットのコマンド一覧と使い方を表示します'),
 
 
-  new SlashCommandBuilder()
-    .setName('addword')
-    .setDescription('Whisperの誤認識を修正する辞書に単語を登録します')
-    .addStringOption((opt) => opt.setName('wrong').setDescription('誤って認識される言葉 (例: ホヨバース)').setRequired(true))
-    .addStringOption((opt) => opt.setName('correct').setDescription('正しい言葉 (例: HoYoverse)').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('delword')
-    .setDescription('辞書から単語を削除します')
-    .addStringOption((opt) => opt.setName('wrong').setDescription('削除する言葉').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('listwords')
-    .setDescription('登録されている辞書の一覧を表示します'),
 
   new SlashCommandBuilder()
     .setName('readname')
@@ -193,16 +167,12 @@ export const commandDefinitions = [
     .addNumberOption((opt) => opt.setName('volume').setDescription('音量 (例: 0.5で半分、1.0で標準)').setRequired(true)),
 
   new SlashCommandBuilder()
-    .setName('servervoice')
-    .setDescription('サーバー全体のデフォルト話者を設定します')
-    .addIntegerOption((opt) => opt.setName('voiceid').setDescription('話者名を選択してください').setRequired(true).setAutocomplete(true)),
-
-  new SlashCommandBuilder()
-    .setName('servervoiceparams')
-    .setDescription('サーバー全体の声のオプション（速度、ピッチ、音量）のデフォルトを設定します')
-    .addNumberOption((opt) => opt.setName('speed').setDescription('速度'))
-    .addNumberOption((opt) => opt.setName('pitch').setDescription('ピッチ'))
-    .addNumberOption((opt) => opt.setName('volume').setDescription('音量')),
+    .setName('set-server')
+    .setDescription('サーバー全体のデフォルトの声設定（話者、速度、ピッチ、音量）を変更するのだ')
+    .addSubcommand(sub => sub.setName('voice').setDescription('デフォルト話者を設定するのだ').addIntegerOption(opt => opt.setName('voiceid').setDescription('話者名を選択してください').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub.setName('speed').setDescription('デフォルト速度を設定するのだ').addNumberOption(opt => opt.setName('value').setDescription('速度').setRequired(true)))
+    .addSubcommand(sub => sub.setName('pitch').setDescription('デフォルトピッチを設定するのだ').addNumberOption(opt => opt.setName('value').setDescription('ピッチ').setRequired(true)))
+    .addSubcommand(sub => sub.setName('volume').setDescription('デフォルト音量を設定するのだ').addNumberOption(opt => opt.setName('value').setDescription('音量').setRequired(true))),
 
   new SlashCommandBuilder()
     .setName('customsound')
@@ -247,15 +217,11 @@ const cleanTimers = new Map();
 
 // List of all command names for permission validation
 const ALL_COMMAND_NAMES = [
-  'join', 'leave', 'setchannel', 'setvoice', 'voiceparams',
-  'voiceparams speed', 'voiceparams pitch', 'voiceparams volume',
-  'chatmode', 'soundboard',
-  'serverstatus', 'mystatus', 'help', 'addword', 'delword',
-  'listwords', 'readname', 'announce', 'cleanchat', 'trim', 'permissions',
-  'play', 'pause', 'skip', 'queue', 'lyrics',
-  'permissions set', 'permissions list', 'permissions reset',
-  'musicvolume', 'servervoice', 'servervoiceparams',
-  'servervoiceparams speed', 'servervoiceparams pitch', 'servervoiceparams volume',
+  'vc', 'set', 'set voice', 'set speed', 'set pitch', 'set volume',
+  'setchannel', 'search', 'soundboard', 'serverstatus', 'mystatus', 'help',
+  'readname', 'announce', 'cleanchat', 'trim', 'permissions',
+  'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume',
+  'set-server', 'set-server voice', 'set-server speed', 'set-server pitch', 'set-server volume',
   'customsound add', 'customsound remove', 'customsound list',
   'customemoji add', 'customemoji remove', 'customemoji list', 'loop'
 ];
@@ -278,7 +244,7 @@ const VOICES_LIST = [
 export async function handleAutocomplete(interaction) {
   const focusedOption = interaction.options.getFocused(true);
 
-  if (interaction.commandName === 'setvoice' || interaction.commandName === 'servervoice') {
+  if (interaction.commandName === 'set' || interaction.commandName === 'set-server') {
     if (focusedOption.name === 'voiceid') {
       const q = String(focusedOption.value).toLowerCase();
       const filtered = VOICES_LIST.filter(v => v.name.includes(q)).slice(0, 25);
@@ -319,13 +285,13 @@ function checkPermission(guildId, commandPath, member, channelId) {
 
     // 1. User specific rule overrides everything
     if (rules[member.id]) {
-      console.log(`[Permission] Found user override for ${member.user.tag}: ${rules[member.id]}`);
+      console.log(`[SYS] [Permission] Found user override for ${member.user.tag}: ${rules[member.id]}`);
       return rules[member.id] === 'allow';
     }
 
     // 1.5 Channel specific rule
     if (channelId && rules[channelId]) {
-      console.log(`[Permission] Found channel override for #${channelId}: ${rules[channelId]}`);
+      console.log(`[SYS] [Permission] Found channel override for #${channelId}: ${rules[channelId]}`);
       return rules[channelId] === 'allow';
     }
 
@@ -340,24 +306,24 @@ function checkPermission(guildId, commandPath, member, channelId) {
     }
 
     if (hasRoleDeny) {
-      console.log(`[Permission] Found role DENY for ${member.user.tag}`);
+      console.log(`[SYS] [Permission] Found role DENY for ${member.user.tag}`);
       return false;
     }
     if (hasRoleAllow) {
-      console.log(`[Permission] Found role ALLOW for ${member.user.tag}`);
+      console.log(`[SYS] [Permission] Found role ALLOW for ${member.user.tag}`);
       return true;
     }
 
     // 3. @everyone rule
     if (rules[guildId]) {
-      console.log(`[Permission] Found @everyone override: ${rules[guildId]}`);
+      console.log(`[SYS] [Permission] Found @everyone override: ${rules[guildId]}`);
       return rules[guildId] === 'allow';
     }
 
     // 4. Default implicit logic
     const hasAnyAllow = Object.values(rules).some(v => v === 'allow');
     if (hasAnyAllow) {
-      console.log(`[Permission] Implicit DENY (whitelist mode active) for ${member.user.tag}`);
+      console.log(`[SYS] [Permission] Implicit DENY (whitelist mode active) for ${member.user.tag}`);
       return false;
     }
 
@@ -379,6 +345,17 @@ function checkPermission(guildId, commandPath, member, channelId) {
 }
 
 /**
+ * Extracts YouTube Video ID from various URL formats.
+ * @param {string} url
+ * @returns {string|null}
+ */
+function getYouTubeId(url) {
+  if (!url) return null;
+  const match = url.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+}
+
+/**
  * Handles an incoming slash command interaction.
  * @param {import('discord.js').ChatInputCommandInteraction} interaction
  */
@@ -392,8 +369,16 @@ export async function handleCommand(interaction) {
     });
   }
 
+  // ── Pre-process command path for logging ────────────────────
+  let fullCommandPath = commandName;
+  try {
+    const subcommand = interaction.options.getSubcommand(false);
+    if (subcommand) fullCommandPath = `${commandName} ${subcommand}`;
+  } catch (e) { }
+
   // ── 2FA Auth check ──────────────────────────────────────────
   if (!isGuildAuthorized(guild.id)) {
+    logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Denied (Unauthorized/2FA)`);
     return interaction.reply({
       content: '⛔ このサーバーは認証されていないのだ。ボットオーナーに認証を依頼してほしいのだ！',
       flags: [MessageFlags.Ephemeral],
@@ -402,6 +387,7 @@ export async function handleCommand(interaction) {
 
   // ── Blocked check ──────────────────────────────────────────
   if (isGuildBlocked(guild.id)) {
+    logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Denied (Blocked)`);
     return interaction.reply({
       content: '🚫 このサーバーはボットオーナーによってブロックされているのだ。コマンドは使用できないのだ。',
       flags: [MessageFlags.Ephemeral],
@@ -409,13 +395,8 @@ export async function handleCommand(interaction) {
   }
 
   // ── Permission check ────────────────────────────────────────
-  let fullCommandPath = commandName;
-  try {
-    const subcommand = interaction.options.getSubcommand(false);
-    if (subcommand) fullCommandPath = `${commandName} ${subcommand}`;
-  } catch (e) { }
-
   if (!checkPermission(guild.id, fullCommandPath, member, interaction.channelId)) {
+    logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Denied (No Permission)`);
     return interaction.reply({
       content: '🚫 あなたのユーザー、現在のチャンネル、またはロールではこのコマンドを使用する権限がないのだ。',
       flags: [MessageFlags.Ephemeral],
@@ -423,192 +404,148 @@ export async function handleCommand(interaction) {
   }
 
   // ── Analytics Tracking ────────────────────────────────────────
+  const { emitLiveSnapshot, broadcastStats } = await import('./index.js');
   incrementCommand(guild.id, fullCommandPath);
-  trackCommandExecution(guild.id, fullCommandPath, member.id);
+  
+  // Immediate Reporting
+  emitLiveSnapshot(guild.id, { commands_used: { [fullCommandPath]: 1 } });
+  broadcastStats();
 
-  // ── /join ──────────────────────────────────────────────────────
-  if (commandName === 'join') {
+  console.log(`[G:${guild.id}] [CMD] Command: /${fullCommandPath} (User: ${interaction.user.username})`);
+  const logMsg = `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Success`;
+  logToSupabase(guild.id, 'cmd', logMsg);
+
+  // ── /vc (Join/Leave/Move Toggle) ────────────────────────────────
+  if (commandName === 'vc') {
     const voiceChannel = member?.voice?.channel;
     if (!voiceChannel) {
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Not in VC)`);
       return interaction.reply({
         content: '❌ まずボイスチャンネルに参加してほしいのだ！',
         flags: [MessageFlags.Ephemeral],
       });
     }
 
-    try {
-      await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-    } catch (err) {
-      console.warn('⚠️ [join] Discord APIへの応答が3秒以内に間に合わずタイムアウトしました。Discordの遅延が原因の可能性が高いです。');
-      return;
-    }
+    const currentChannel = guild.members.me.voice.channel;
 
-    try {
-      await joinChannel(voiceChannel);
-      setGuildConfig(guild.id, { voiceChannelId: voiceChannel.id });
-
+    if (currentChannel && currentChannel.id === voiceChannel.id) {
+      // Leave
+      leaveChannel(guild.id);
+      setGuildConfig(guild.id, { voiceChannelId: null, lastUserId: null });
+      console.log(`[G:${guild.id}] [SYS] Left voice channel: ${currentChannel.name}`);
+      logToSupabase(guild.id, 'sys', `Left voice channel: ${currentChannel.name}`);
       const embed = new EmbedBuilder()
-        .setColor('#A5D6A7') // Zundamon Light Green
-        .setTitle('接続しました')
-        .setDescription(
-          `🔊 **${voiceChannel.name}** に接続したのだ。\n\n` +
-          `**お知らせ:**\n` +
-          `ずんだもん読み上げBOTをご利用いただきありがとうなのだ。\n` +
-          `ダッシュボードから詳細な詳細な権限管理や使用状況のアナリティクスを確認できるのだ。\n\n` +
-          `Tips: 読み上げるテキストチャンネルは \`/setchannel\` で設定できるのだ！`
-        )
+        .setColor('#FF8A80') // Light Red/Pinkish for leaving
+        .setTitle('退出しました')
+        .setDescription(`❌ **${currentChannel.name}** から退出したのだ！`)
         .setTimestamp();
-
-      await interaction.editReply({ embeds: [embed] });
-    } catch (err) {
-      console.error('[join]', err);
-      const isTimeout = err.name === 'AbortError' || err.message.includes('timeout') || err.message.includes('Ready');
-      let errorMessage = '❌ ボイスチャンネルへの参加に失敗したのだ。';
-      if (isTimeout) {
-        errorMessage += '\n\n**🔍 考えられる原因:**\n' +
-          '・サーバーのファイアウォールでUDP通信が制限されている可能性があるのだ\n' +
-          '・Discord側のボイスサーバーが混雑しているか不安定なのだ\n' +
-          '・ボットに「接続」と「発言」の権限があるか確認してほしいのだ！';
+      return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+    } else {
+      // Join or Move
+      try {
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+      } catch (err) {
+        console.warn('⚠️ [vc] Interaction timeout:', err.message);
+        return;
       }
-      await interaction.editReply(errorMessage);
+
+      try {
+        await joinChannel(voiceChannel);
+        setGuildConfig(guild.id, { voiceChannelId: voiceChannel.id });
+        console.log(`[G:${guild.id}] [SYS] Joined voice channel: ${voiceChannel.name}`);
+        logToSupabase(guild.id, 'sys', `Joined voice channel: ${voiceChannel.name}`);
+
+        const actionText = currentChannel ? '移動しました' : '接続しました';
+        const embed = new EmbedBuilder()
+          .setColor('#A5D6A7')
+          .setTitle(actionText)
+          .setDescription(`🔊 **${voiceChannel.name}** に${currentChannel ? '移動' : '接続'}したのだ！`)
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (err) {
+        console.error('[vc]', err);
+        await interaction.editReply('❌ ボイスチャンネルへの参加に失敗したのだ。');
+      }
     }
     return;
   }
 
-  // ── /leave ─────────────────────────────────────────────────────
-  if (commandName === 'leave') {
-    if (!isConnected(guild.id)) {
-      return interaction.reply({
-        content: '❌ ボイスチャンネルに参加していないのだ。',
-        flags: [MessageFlags.Ephemeral],
-      });
+  // ── /set ──────────────────────────────────────────────────
+  if (commandName === 'set') {
+    const sub = interaction.options.getSubcommand();
+    const cfg = getFullGuildConfig(guild.id).settings;
+    const userId = interaction.user.id;
+
+    if (sub === 'voice') {
+      const voiceId = interaction.options.getInteger('voiceid');
+      const userVoices = cfg.userVoices || {};
+      userVoices[userId] = voiceId;
+      setGuildConfig(guild.id, { userVoices });
+      return interaction.reply({ content: `✅ あなたの声を話者ID **${voiceId}** に設定したのだ！`, flags: [MessageFlags.Ephemeral] });
     }
-    leaveChannel(guild.id);
-    setGuildConfig(guild.id, { voiceChannelId: null });
-    return interaction.reply({ content: '👋 退出したのだ！', flags: [MessageFlags.Ephemeral] });
+
+    // speed, pitch, volume
+    const value = interaction.options.getNumber('value');
+    const userParams = cfg.userParams || {};
+    const myParams = userParams[userId] || {};
+
+    if (sub === 'speed') myParams.speed = value;
+    if (sub === 'pitch') myParams.pitch = value;
+    if (sub === 'volume') myParams.volume = value;
+
+    userParams[userId] = myParams;
+    setGuildConfig(guild.id, { userParams });
+    return interaction.reply({
+      content: `✅ あなたの **${sub}** を **${value}** に設定したのだ！`,
+      flags: [MessageFlags.Ephemeral],
+    });
   }
 
-  // ── /setchannel ────────────────────────────────────────────────
+  // ── /setchannel ──────────────────────────────────────────────
   if (commandName === 'setchannel') {
     const channel = interaction.options.getChannel('channel');
-    if (!channel?.isTextBased()) {
+    if (!channel || !channel.isTextBased()) {
       return interaction.reply({
-        content: '❌ テキストチャンネルを選択してほしいのだ。',
+        content: '❌ テキストチャンネルを選択してほしいのだ！',
         flags: [MessageFlags.Ephemeral],
       });
     }
-    setGuildConfig(guild.id, { textChannelId: channel.id });
-    return interaction.reply({
-      content: `✅ <#${channel.id}> のメッセージを読み上げるのだ！`,
-      flags: [MessageFlags.Ephemeral],
-    });
+
+    await setGuildConfig(guild.id, { textChannelId: channel.id });
+    
+    const embed = new EmbedBuilder()
+      .setColor('#81C784')
+      .setTitle('📢 読み上げチャンネル設定')
+      .setDescription(`✅ これから **${channel.name}** での発言を読み上げるのだ！`)
+      .setTimestamp();
+
+    return interaction.reply({ embeds: [embed] });
   }
 
-  // ── /setvoice ────────────────────────────────────────────────
-  if (commandName === 'setvoice') {
-    const voiceId = interaction.options.getInteger('voiceid');
-    const cfg = getFullGuildConfig(guild.id).settings;
-    const userVoices = cfg.userVoices || {};
-    userVoices[interaction.user.id] = voiceId;
-    setGuildConfig(guild.id, { userVoices });
-    return interaction.reply({
-      content: `✅ あなたの読み上げる声を話者ID **${voiceId}** に設定したのだ！`,
-      flags: [MessageFlags.Ephemeral],
-    });
-  }
-
-  // ── /voiceparams (per-user) ───────────────────────────────────
-  if (commandName === 'voiceparams') {
-    const speed = interaction.options.getNumber('speed');
-    const pitch = interaction.options.getNumber('pitch');
-    const volume = interaction.options.getNumber('volume');
-
-    if (speed !== null && !checkPermission(guild.id, 'voiceparams speed', member, interaction.channelId)) {
-      return interaction.reply({ content: '🚫 速度(speed)を変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
-    }
-    if (pitch !== null && !checkPermission(guild.id, 'voiceparams pitch', member, interaction.channelId)) {
-      return interaction.reply({ content: '🚫 ピッチ(pitch)を変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
-    }
-    if (volume !== null && !checkPermission(guild.id, 'voiceparams volume', member, interaction.channelId)) {
-      return interaction.reply({ content: '🚫 音量(volume)を変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
-    }
-
-    const cfg = getFullGuildConfig(guild.id).settings;
-    const userParams = cfg.userParams || {};
-    const myParams = userParams[interaction.user.id] || {};
-
-    if (speed !== null) myParams.speed = speed;
-    if (pitch !== null) myParams.pitch = pitch;
-    if (volume !== null) myParams.volume = volume;
-
-    if (speed !== null || pitch !== null || volume !== null) {
-      userParams[interaction.user.id] = myParams;
-      setGuildConfig(guild.id, { userParams });
-      return interaction.reply({
-        content: `✅ あなた専用の声設定を更新したのだ！\n速度: ${myParams.speed ?? 'デフォルト'}, ピッチ: ${myParams.pitch ?? 'デフォルト'}, 音量: ${myParams.volume ?? 'デフォルト'}`,
-        flags: [MessageFlags.Ephemeral],
-      });
-    } else {
-      return interaction.reply({
-        content: '⚠️ 変更するパラメータを指定してほしいのだ。',
-        flags: [MessageFlags.Ephemeral],
-      });
-    }
-  }
-
-  // ── /chatmode ────────────────────────────────────────────────
-  if (commandName === 'chatmode') {
+  // ── /search ────────────────────────────────────────────────────
+  if (commandName === 'search') {
+    const text = interaction.options.getString('text');
     try {
-      await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+      await interaction.deferReply();
     } catch (err) {
-      console.warn('⚠️ [chatmode] Interaction timeout:', err.message);
+      console.warn('⚠️ [search] Interaction timeout:', err.message);
       return;
     }
 
-    const enabled = interaction.options.getBoolean('enabled');
+    const { reply, urls } = await processSearchCommand(guild.id, interaction.user.id, text);
 
-    if (!enabled) {
-      setGuildConfig(guild.id, { chatMode: false, chatModeUserId: null });
-      cancelAiGeneration(guild.id);
-      return interaction.editReply('✅ AIによる自然会話モードを **オフ** にしたのだ。');
+    const embed = new EmbedBuilder()
+      .setColor('#81C784')
+      .setTitle('🔍 検索結果なのだ')
+      .setDescription(`**❓ 質問:**\n${text}\n\n**💬 回答:**\n${reply}`)
+      .setTimestamp();
+
+    if (urls && urls.length > 0) {
+      embed.addFields({ name: '🔗 参考ソース', value: urls.slice(0, 5).join('\n') });
     }
 
-    setGuildConfig(guild.id, { chatMode: true, chatModeUserId: interaction.user.id });
-
-    if (isWhisperReady()) {
-      return interaction.editReply('✅ AIによる自然会話モードを **オン** にしたのだ！ ボイスチャンネルで話しかけてみるのだ！');
-    }
-
-    await interaction.editReply('⏳ AIモードをオンにするのだ！Whisperモデルを起動中なのだ…少し待ってほしいのだ！');
-
-    const cfg = getFullGuildConfig(guild.id).settings;
-    const textChannel = cfg.textChannelId
-      ? guild.channels.cache.get(cfg.textChannelId)
-      : null;
-
-    if (textChannel?.isTextBased()) {
-      await textChannel.send(
-        '🤖 ずんだもんのAIモードを起動するのだ！\n' +
-        'Whisperモデルを読み込んでいるのだ…ちょっとだけ待ってほしいのだ！⏳'
-      );
-    }
-
-    preloadWhisper();
-
-    onWhisperReady(async () => {
-      try {
-        if (textChannel?.isTextBased()) {
-          await textChannel.send(
-            '✅ 準備できたのだ！これからボイスチャンネルで話しかけてくれたら、ずんだもんが答えるのだ！🎤'
-          );
-        }
-        enqueue(guild.id, '準備ができたのだ！これからボイスチャンネルでお喋りできるのだ！');
-      } catch (err) {
-        console.error('[chatmode] Failed to send ready message:', err.message);
-      }
-    });
-
-    return;
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // ── /serverstatus ──────────────────────────────────────────────
@@ -638,7 +575,7 @@ export async function handleCommand(interaction) {
         },
         {
           name: '🤖 実装モード',
-          value: `> **AI会話:** ${cfg.chatMode ? '`ON`' : '`OFF`'}\n` +
+          value: `\n` +
             `> **カラオケ:** ${cfg.karaokeMode ? '`ON`' : '`OFF`'}\n` +
             `> **サウンドボード:** ${cfg.soundboardMode ? '`ON`' : '`OFF`'}`,
           inline: true
@@ -646,7 +583,7 @@ export async function handleCommand(interaction) {
         {
           name: '🎙️ デフォルト音声設定',
           value: `> **話者:** \`ずんだもん (${cfg.speakerId ?? 3})\`\n` +
-            `> **詳細:** 速度 \`${cfg.speed ?? 1.0}\` | ピッチ \`${cfg.pitch ?? 0.0}\` | 音量 \`${cfg.volume ?? 1.0}\``,
+            `> **詳細:** \`/set-server\` で設定可能なのだ (速度 \`${cfg.speed ?? 1.0}\` | ピッチ \`${cfg.pitch ?? 0.0}\` | 音量 \`${cfg.volume ?? 1.0}\`)`,
           inline: false
         },
         {
@@ -684,7 +621,7 @@ export async function handleCommand(interaction) {
       .setColor('#81C784')
       .setAuthor({ name: interaction.user.username, iconURL: interaction.user.displayAvatarURL() })
       .setTitle('🎤 あなたの声設定なのだ')
-      .setDescription('サーバー設定（デフォルト）よりもこの個人設定が優先されますのだ！')
+      .setDescription('サーバー設定よりも、`/set` で設定した以下の内容が優先されますのだ！')
       .addFields(
         { name: '🔊 話者ID', value: `${voiceId !== undefined ? voiceId : `デフォルト (${cfg.speakerId ?? 3})`}`, inline: true },
         { name: '⚡ 速度 (Speed)', value: `${myParams.speed ?? cfg.speed ?? 1.0}${myParams.speed !== undefined ? '' : ' *(鯖デフォ)*'}`, inline: true },
@@ -706,40 +643,6 @@ export async function handleCommand(interaction) {
     });
   }
 
-  // ── Dictionary Commands ──────────────────────────────────────
-  if (commandName === 'addword') {
-    const bad = interaction.options.getString('wrong');
-    const good = interaction.options.getString('correct');
-    const cfg = getFullGuildConfig(guild.id).settings;
-    const dict = cfg.whisperDict || {};
-    dict[bad] = good;
-    setGuildConfig(guild.id, { whisperDict: dict });
-    return interaction.reply({ content: `✅ **辞書に登録したのだ！**\n❌「${bad}」 👉 ⭕「${good}」`, flags: [MessageFlags.Ephemeral] });
-  }
-
-  if (commandName === 'delword') {
-    const bad = interaction.options.getString('wrong');
-    const cfg = getFullGuildConfig(guild.id).settings;
-    const dict = cfg.whisperDict || {};
-    if (dict[bad]) {
-      delete dict[bad];
-      setGuildConfig(guild.id, { whisperDict: dict });
-      return interaction.reply({ content: `🗑️ 辞書から「${bad}」を削除したのだ！`, flags: [MessageFlags.Ephemeral] });
-    } else {
-      return interaction.reply({ content: `⚠️ 辞書に「${bad}」は見つからないのだ。`, flags: [MessageFlags.Ephemeral] });
-    }
-  }
-
-  if (commandName === 'listwords') {
-    const cfg = getFullGuildConfig(guild.id).settings;
-    const dict = cfg.whisperDict || {};
-    const entries = Object.entries(dict);
-    if (entries.length === 0) {
-      return interaction.reply({ content: `📝 辞書にはまだ何も登録されていないのだ！`, flags: [MessageFlags.Ephemeral] });
-    }
-    const lines = entries.map(([b, g]) => `・ ${b} 👉 ${g}`);
-    return interaction.reply({ content: `📝 **現在のユーザー辞書 (${entries.length}件)**\n${lines.join('\n')}`, flags: [MessageFlags.Ephemeral] });
-  }
 
   // ── /announce ────────────────────────────────────────────────
   if (commandName === 'announce') {
@@ -779,6 +682,10 @@ export async function handleCommand(interaction) {
     setGuildConfig(guild.id, { cleanChatTasks: cleanTasks });
 
     startCleanChatTimer(interaction.client, guild.id, channel.id, minutes * 60 * 1000);
+
+    const logMsg = `[CLEANCHAT] Enabled for #${channel.name} every ${minutes} minutes.`;
+    console.log(`[G:${guild.id}] [SYS] ${logMsg}`);
+    logToSupabase(guild.id, 'sys', logMsg);
 
     return interaction.reply({
       content: `🧹 このチャンネルのメッセージを **${minutes}分ごと** に自動削除するのだ！\n（${minutes}分より古いメッセージが対象なのだ）\n無効にするには \`/cleanchat minutes:0\` を使うのだ。`,
@@ -883,7 +790,11 @@ export async function handleCommand(interaction) {
         });
       }
 
-      delete perms[cmdName];
+      if (DEFAULT_PERMISSIONS[cmdName]) {
+        perms[cmdName] = DEFAULT_PERMISSIONS[cmdName];
+      } else {
+        delete perms[cmdName];
+      }
       updateGuildMeta(guild.id, { permissions: perms });
 
       return interaction.reply({
@@ -899,9 +810,9 @@ export async function handleCommand(interaction) {
       {
         name: '🎮 基本操作',
         commands: [
-          { cmd: 'join', desc: 'ボイスチャンネルに参加' },
-          { cmd: 'leave', desc: 'ボイスチャンネルから退出' },
+          { cmd: 'vc', desc: 'ボイスチャンネルに参加・退出・移動' },
           { cmd: 'setchannel', desc: '読み上げ対象のテキストチャンネルを指定' },
+          { cmd: 'search', desc: 'ウェブ検索してずんだもんが答える（読み上げなし）' },
           { cmd: 'serverstatus', desc: 'サーバー設定と接続状態を確認' },
           { cmd: 'mystatus', desc: 'あなたの現在の声設定を確認' },
           { cmd: 'help', desc: 'このヘルプを表示' }
@@ -910,44 +821,43 @@ export async function handleCommand(interaction) {
       {
         name: '🔊 声の設定',
         commands: [
-          { cmd: 'setvoice', desc: '自分専用の声を話者名で指定' },
-          { cmd: 'servervoice', desc: 'サーバー全体のデフォルト話者を指定' },
-          { cmd: 'voiceparams', desc: '速度・ピッチ・音量を個人設定' },
-          { cmd: 'servervoiceparams', desc: 'サーバー全体の音声パラメータを指定' },
+          { cmd: 'set voice', desc: '自分専用の声を話者IDで指定' },
+          { cmd: 'set speed', desc: '自分の読み上げ速度を設定' },
+          { cmd: 'set pitch', desc: '自分の読み上げピッチを設定' },
+          { cmd: 'set volume', desc: '自分の読み上げ音量を設定' },
           { cmd: 'readname', desc: '発言者の名前読み上げ (オン/オフ)' },
           { cmd: 'announce', desc: '入退室読み上げ (オン/オフ)' },
           { cmd: 'trim', desc: '読み上げ最大文字数を設定' },
-          { cmd: 'customsound', desc: 'サウンドボード音源を管理' },
-          { cmd: 'customemoji', desc: 'カスタム絵文字の読み上げ辞書を管理' },
+          { cmd: 'customsound add', desc: 'キーワードに反応するSEを追加' },
+          { cmd: 'customsound remove', desc: 'キーワード反応SEを削除' },
+          { cmd: 'customsound list', desc: '登録済みSEの一覧を表示' },
+          { cmd: 'customemoji add', desc: '絵文字の読み方を辞書に追加' },
+          { cmd: 'customemoji remove', desc: '絵文字の読み方を辞書から削除' },
+          { cmd: 'customemoji list', desc: '登録済み絵文字辞書の一覧を表示' },
           { cmd: 'soundboard', desc: 'サウンドボード反応モード (オン/オフ)' }
         ]
       },
       {
-        name: '🤖 AI会話 & 辞書',
+        name: '🌐 サーバー設定 (管理者用)',
         commands: [
-          { cmd: 'chatmode', desc: 'AI音声会話モードのオン/オフ' },
-          { cmd: 'addword', desc: 'Whisper誤認識を補正する辞書に登録' },
-          { cmd: 'delword', desc: '辞書ルールを削除' },
-          { cmd: 'listwords', desc: '辞書ルール一覧' }
+          { cmd: 'set-server voice', desc: 'サーバー全体のデフォルト話者を指定' },
+          { cmd: 'set-server speed', desc: 'サーバー全体のデフォルト速度を設定' },
+          { cmd: 'set-server pitch', desc: 'サーバー全体のデフォルトピッチを設定' },
+          { cmd: 'set-server volume', desc: 'サーバー全体のデフォルト音量を設定' },
+          { cmd: 'permissions', desc: 'コマンド使用権限を管理' },
+          { cmd: 'cleanchat', desc: 'メッセージを定期自動削除' }
         ]
       },
       {
-        name: '🎵 カラオケモード',
+        name: '🎵 音楽再生',
         commands: [
-          { cmd: 'play', desc: 'YouTubeから曲を再生 (使うとカラオケモードがオンになります)' },
+          { cmd: 'play', desc: 'YouTubeから曲を再生' },
           { cmd: 'pause', desc: '音楽の一時停止 / 再開' },
           { cmd: 'skip', desc: '現在の曲をスキップ' },
-          { cmd: 'queue', desc: '再生中・待機中の曲リストとループ状態を表示' },
-          { cmd: 'loop', desc: '音楽のループ再生を設定 (オフ/1曲/全曲)' },
+          { cmd: 'queue', desc: '再生中・待機中の曲リスト' },
+          { cmd: 'loop', desc: 'ループ再生を設定' },
           { cmd: 'lyrics', desc: '再生中の曲の歌詞を表示' },
           { cmd: 'musicvolume', desc: 'BGM音量を設定' }
-        ]
-      },
-      {
-        name: '🔒 サーバー管理（オーナー等）',
-        commands: [
-          { cmd: 'permissions', desc: 'ロール設定やユーザー例外でコマンド等を許可/拒否' },
-          { cmd: 'cleanchat', desc: 'チャンネルのBOTメッセージを定期自動削除' }
         ]
       }
     ];
@@ -985,15 +895,16 @@ export async function handleCommand(interaction) {
 
   // ── /play ──────────────────────────────────────────────────────
   if (commandName === 'play') {
-    const voiceChannel = member?.voice?.channel;
     if (!voiceChannel && !isConnected(guild.id)) {
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Not in VC)`);
       return interaction.reply({ content: '❌ まずボイスチャンネルに参加してほしいのだ！', flags: [MessageFlags.Ephemeral] });
     }
 
     // Auto-enable karaoke mode and disable chat mode if not already active
     const cfg = getGuildConfig(guild.id);
     if (!cfg.karaokeMode) {
-      setGuildConfig(guild.id, { karaokeMode: true, chatMode: false });
+      setGuildConfig(guild.id, { karaokeMode: true });
+      subscribeToMusic(guild.id);
     }
 
     const query = interaction.options.getString('query');
@@ -1008,11 +919,13 @@ export async function handleCommand(interaction) {
 
       const result = await enqueueMusic(guild.id, query, interaction.user.id);
       if (!result) {
+        logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Song not found)`);
         return interaction.editReply(`❌ 指定された曲が見つからなかった、または読み込めなかったのだ。`);
       }
       return interaction.editReply(result);
     } catch (err) {
       console.error('[Play] Error:', err);
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Error: ${err.message})`);
       return interaction.editReply(`❌ 曲の処理中にエラーが発生したのだ。`);
     }
   }
@@ -1021,6 +934,7 @@ export async function handleCommand(interaction) {
   if (commandName === 'pause') {
     const isPaused = pauseMusic(guild.id);
     if (isPaused === null) {
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Not playing)`);
       return interaction.reply({ content: `❌ 現在何も再生されていないのだ。`, flags: [MessageFlags.Ephemeral] });
     }
     return interaction.reply({ content: isPaused ? `⏸️ 音楽を一時停止したのだ。` : `▶️ 音楽を再開したのだ！` });
@@ -1030,6 +944,7 @@ export async function handleCommand(interaction) {
   if (commandName === 'skip') {
     const skipped = skipMusic(guild.id);
     if (!skipped) {
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Nothing to skip)`);
       return interaction.reply({ content: `❌ スキップできる曲がないのだ。`, flags: [MessageFlags.Ephemeral] });
     }
     return interaction.reply({ content: `⏭️ 現在の曲をスキップしたのだ！` });
@@ -1039,6 +954,7 @@ export async function handleCommand(interaction) {
   if (commandName === 'queue') {
     const q = getQueue(guild.id);
     if (!q || (!q.current && q.upcoming.length === 0)) {
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Queue empty)`);
       return interaction.reply({ content: `🎶 現在キューに曲はないのだ。`, flags: [MessageFlags.Ephemeral] });
     }
 
@@ -1062,6 +978,7 @@ export async function handleCommand(interaction) {
   // ── /loop ──────────────────────────────────────────────────────
   if (commandName === 'loop') {
     if (!isConnected(guild.id)) {
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Not in VC)`);
       return interaction.reply({ content: '❌ ボイスチャンネルに参加していないのだ！', flags: [MessageFlags.Ephemeral] });
     }
     const mode = interaction.options.getString('mode');
@@ -1075,48 +992,192 @@ export async function handleCommand(interaction) {
   if (commandName === 'lyrics') {
     const q = getQueue(guild.id);
     if (!q || !q.current) {
+      logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Not playing)`);
       return interaction.reply({ content: `❌ 現在何も再生されていないため、歌詞を表示できないのだ。`, flags: [MessageFlags.Ephemeral] });
     }
 
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
     try {
-      // 1. Try LRCLIB (Global/Spotify)
+      // 1. Initial metadata from yt-dlp if available
+      let track = q.current.track;
+      let artist = q.current.artist;
       let cleanTitle = q.current.title;
-      // Extract from Japanese quotes if present (usually denotes the song name)
+
+      // 2. Refined cleaning logic for fallback
+      // Extract from Japanese quotes if present (standard for song names in JP titles)
       const quoteMatch = cleanTitle.match(/[「『](.+?)[」』]/);
       if (quoteMatch && quoteMatch[1]) {
-        cleanTitle = quoteMatch[1];
-      } else {
-        // Aggressive fallback cleaning for covers / utattemita
-        cleanTitle = cleanTitle
-          .replace(/\[.*?\]|\(.*?\)|【.*?】/g, ' ')
+        track = track || quoteMatch[1];
+        // If we found a track in quotes, the rest of the title might contain the artist
+        if (!artist) {
+          const splitParts = cleanTitle.split(/[「『」』]/);
+          const potentialArtist = splitParts[0].trim() || splitParts[2]?.trim();
+          if (potentialArtist && potentialArtist.length > 1) artist = potentialArtist;
+        }
+      }
+
+      // If still missing metadata, perform aggressive cleaning on the raw title
+      if (!track) {
+        let tempTrack = cleanTitle
+          .replace(/\[.*?\]|\(.*?\)|【.*?】/g, ' ') // Strip tags [MV], (Official)
           .replace(/Music Video|Official\s*(Video|Audio|Music Video)?|MV|ft\.|feat\.|Lyric Video/gi, ' ')
           .replace(/歌ってみた|を歌ってみた|cover(ed by| by)?|弾いてみた|叩いてみた|off vocal|instrumental|inst|Remix/gi, ' ')
-          .split(/\/|／|\||｜/)[0]
           .replace(/\s+/g, ' ')
           .trim();
-      }
-      let lyrics = null;
-      let source = 'LRCLIB';
 
-      try {
-        const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanTitle)}`);
-        const data = await res.json();
-        if (data && data[0] && data[0].plainLyrics) {
-          lyrics = data[0].plainLyrics;
+        // Handle common delimiters (Artist - Title or Title / Artist)
+        const delimiters = [/\s*-\s*/, /\s*—\s*/, /\s*\/\s*/, /\s*／\s*/, /\s*\|\s*/, /\s*｜\s*/, /\s*:\s*/];
+        let foundDelim = false;
+        for (const delim of delimiters) {
+          if (tempTrack.match(delim)) {
+            const parts = tempTrack.split(delim).filter(p => p.trim().length > 0);
+            if (parts.length >= 2) {
+              // We assign both to try searching later, but for now we'll just treat them as keywords
+              track = parts[1].trim();
+              if (!artist) artist = parts[0].trim();
+              foundDelim = true;
+            }
+            break; 
+          }
         }
-      } catch (e) { console.warn('[Lyrics] LRCLIB failed:', e.message); }
+        if (!foundDelim) track = tempTrack;
+      }
 
-      // 2. Fallback to PetitLyrics (Japanese Focus)
+      let lyrics = null;
+      let source = 'YouTube Description';
+
+      // 3. Step 1: YouTube Description Primary Source
+      try {
+        const videoId = getYouTubeId(q.current.url);
+        if (videoId) {
+          console.log(`[Lyrics] Checking YouTube description via yt-search for: ${videoId}`);
+          const info = await ytSearch({ videoId });
+          const desc = info.description;
+          if (desc) {
+            const markers = [/歌詞[:：\n]/i, /Lyrics?[:：\n]/i, /Words[:：\n]/i, /【歌詞】/, /■歌詞/];
+            let bestLyrics = null;
+            
+            for (const marker of markers) {
+              const parts = desc.split(marker);
+              if (parts.length > 1) {
+                const lines = parts[1].trim().split('\n');
+                const resultLines = [];
+                const creditRegex = /^[^:：\n]{2,25}[:：]\s*.+$/; // Label: Value
+                const stopKeywords = ['Background', 'Chorus', 'Shouts', 'Music', 'Compose', 'Arrange', 'Mix', 'Illust', 'Movie', 'Vocal', 'Artist', 'Video', 'Credit', 'Track', 'Album', 'Recorded'];
+
+                for (let line of lines) {
+                  let trimmed = line.trim();
+                  // Skip empty lines or standard lyric brackets
+                  if (!trimmed) {
+                    resultLines.push('');
+                    continue;
+                  }
+                  
+                  // Stop on markers/socials
+                  if (trimmed.includes('http') || trimmed.includes('@')) break;
+                  
+                  let isCredit = false;
+                  const tLower = trimmed.toLowerCase();
+                  for (const kw of stopKeywords) {
+                    if (tLower.includes(kw.toLowerCase()) && (trimmed.includes(':') || trimmed.includes('：'))) {
+                      isCredit = true;
+                      break;
+                    }
+                  }
+                  
+                  // Heuristic for "Label: Value" credit lines
+                  if (!isCredit && creditRegex.test(trimmed) && !trimmed.startsWith('[') && !trimmed.endsWith(']')) {
+                    if (trimmed.length < 120) isCredit = true;
+                  }
+
+                  if (isCredit) break;
+                  resultLines.push(line);
+                }
+                
+                const potential = resultLines.join('\n').trim();
+                if (potential.length > 50) {
+                  bestLyrics = potential;
+                  break;
+                }
+              }
+            }
+            
+            // Enhanced block detection fallback
+            if (!bestLyrics && desc.length > 300 && (desc.match(/\n/g) || []).length > 15) {
+                const lines = desc.split('\n');
+                let blocks = [];
+                let currentBlock = [];
+                
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  const isMeta = trimmed.includes('http') || trimmed.includes('@') || (/^[^:：\n]{2,20}[:：]/.test(trimmed) && trimmed.length < 100);
+                  
+                  if (isMeta || trimmed.length === 0) {
+                    if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
+                    currentBlock = [];
+                  } else {
+                    currentBlock.push(line);
+                  }
+                }
+                if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
+                
+                if (blocks.length > 0) {
+                  bestLyrics = blocks.sort((a, b) => b.length - a.length)[0];
+                }
+            }
+            
+            if (bestLyrics && bestLyrics.length > 100) {
+              lyrics = bestLyrics;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[Lyrics] YouTube description fetch failed:', e.message);
+      }
+
+      // 4. Step 2: LRCLIB Fallback (Multi-step Search)
       if (!lyrics) {
-        try {
-          lyrics = await fetchPetitLyrics(cleanTitle);
-          if (lyrics) source = 'PetitLyrics';
-        } catch (e) { console.warn('[Lyrics] PetitLyrics failed:', e.message); }
+        source = 'LRCLIB';
+        const searchLrclib = async (query, targetTrack, targetArtist) => {
+          try {
+            const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`);
+            const data = await res.json();
+            if (data && data.length > 0) {
+              const tLower = targetTrack?.toLowerCase();
+              const aLower = targetArtist?.toLowerCase();
+
+              for (let i = 0; i < Math.min(data.length, 5); i++) {
+                const resName = data[i].name.toLowerCase();
+                const resArtist = data[i].artistName.toLowerCase();
+                
+                const isNameMatch = tLower && (resName === tLower || resName.includes(tLower));
+                const isArtistMatch = aLower && (resArtist.includes(aLower) || resName.includes(aLower));
+
+                if (isNameMatch && (data[i].plainLyrics || data[i].syncedLyrics)) {
+                  if (!aLower || isArtistMatch) {
+                    return data[i].plainLyrics || data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
+                  }
+                }
+              }
+
+              for (let i = 0; i < Math.min(data.length, 5); i++) {
+                if (data[i].plainLyrics) return data[i].plainLyrics;
+                if (data[i].syncedLyrics) return data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
+              }
+            }
+          } catch (e) {
+            console.warn(`[Lyrics] LRCLIB search failed for "${query}":`, e.message);
+          }
+          return null;
+        };
+
+        lyrics = await searchLrclib(artist ? `${artist} ${track}` : track, track, artist);
+        if (!lyrics && artist && track) lyrics = await searchLrclib(track, track, artist);
+        if (!lyrics) lyrics = await searchLrclib(cleanTitle, track, artist);
       }
 
       if (!lyrics) {
-        return interaction.editReply(`❌ 歌詞データベース（LRCLIB/PetitLyrics）に見つからなかったのだ。申し訳ないのだ。`);
+        return interaction.editReply(`❌ 歌詞データベースおよび動画説明文に見つからなかったのだ。申し訳ないのだ。`);
       }
 
       // Format and send
@@ -1131,6 +1192,9 @@ export async function handleCommand(interaction) {
       });
     } catch (err) {
       console.error('[Lyrics] General Error:', err);
+      incrementCounter(guild.id, 'errors', interaction.user.id);
+      emitLiveSnapshot(guild.id, { errors: 1 });
+      broadcastStats();
       return interaction.editReply(`❌ 歌詞の取得中にエラーが発生したのだ。`);
     }
   }
@@ -1142,35 +1206,24 @@ export async function handleCommand(interaction) {
     return interaction.reply({ content: `🎵 カラオケモードの音量を **${vol}** に設定したのだ！`, flags: [MessageFlags.Ephemeral] });
   }
 
-  // ── /servervoice ────────────────────────────────────────────────
-  if (commandName === 'servervoice') {
-    const vid = interaction.options.getInteger('voiceid');
-    setGuildConfig(guild.id, { speakerId: vid });
-    return interaction.reply({ content: `🎤 サーバー全体のデフォルト話者IDを **${vid}** に設定したのだ！` });
-  }
-
-  // ── /servervoiceparams ──────────────────────────────────────────
-  if (commandName === 'servervoiceparams') {
-    const s = interaction.options.getNumber('speed');
-    const p = interaction.options.getNumber('pitch');
-    const v = interaction.options.getNumber('volume');
-
-    if (s !== null && !checkPermission(guild.id, 'servervoiceparams speed', member, interaction.channelId)) {
-      return interaction.reply({ content: '🚫 速度(speed)のデフォルトを変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
-    }
-    if (p !== null && !checkPermission(guild.id, 'servervoiceparams pitch', member, interaction.channelId)) {
-      return interaction.reply({ content: '🚫 ピッチ(pitch)のデフォルトを変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
-    }
-    if (v !== null && !checkPermission(guild.id, 'servervoiceparams volume', member, interaction.channelId)) {
-      return interaction.reply({ content: '🚫 音量(volume)のデフォルトを変更する権限がないのだ。', flags: [MessageFlags.Ephemeral] });
-    }
-
+  // ── /set-server ──────────────────────────────────────────────────
+  if (commandName === 'set-server') {
+    const sub = interaction.options.getSubcommand();
     const cfg = getFullGuildConfig(guild.id).settings;
-    if (s !== null) cfg.speed = s;
-    if (p !== null) cfg.pitch = p;
-    if (v !== null) cfg.volume = v;
+
+    if (sub === 'voice') {
+      const vid = interaction.options.getInteger('voiceid');
+      setGuildConfig(guild.id, { speakerId: vid });
+      return interaction.reply({ content: `🎤 サーバー全体のデフォルト話者IDを **${vid}** に設定したのだ！` });
+    }
+
+    const val = interaction.options.getNumber('value');
+    if (sub === 'speed') cfg.speed = val;
+    if (sub === 'pitch') cfg.pitch = val;
+    if (sub === 'volume') cfg.volume = val;
+
     setGuildConfig(guild.id, { speed: cfg.speed, pitch: cfg.pitch, volume: cfg.volume });
-    return interaction.reply({ content: `⚙️ サーバー全体の声のデフォルト設定を更新したのだ！\n速度=${cfg.speed ?? 1}, ピッチ=${cfg.pitch ?? 0}, 音量=${cfg.volume ?? 1}` });
+    return interaction.reply({ content: `⚙️ サーバー全体の **${sub}** デフォルトを **${val}** に更新したのだ！` });
   }
 
   // ── /customsound ────────────────────────────────────────────────
@@ -1211,6 +1264,9 @@ export async function handleCommand(interaction) {
         return interaction.editReply(`✅ キーワード「**${keyword}**」の音源を追加したのだ！`);
       } catch (e) {
         console.error('[CustomSound]', e);
+        incrementCounter(guild.id, 'errors', interaction.user.id);
+        emitLiveSnapshot(guild.id, { errors: 1 });
+        broadcastStats();
         return interaction.editReply(`❌ 音源ファイルのアップロード中にエラーが起きたのだ。(Supabase Bucket "sounds" をパブリック設定で作成したか確認してください)`);
       }
     }
@@ -1306,10 +1362,12 @@ export function startCleanChatTimer(client, guildId, channelId, intervalMs) {
 
       if (bulkDeletable.size > 1) {
         await channel.bulkDelete(bulkDeletable, true);
-        console.log(`[G:${guildId}] [CleanChat] Bulk deleted ${bulkDeletable.size} messages in ${channel.name}`);
+        console.log(`[G:${guildId}] [SYS] [CleanChat] Bulk deleted ${bulkDeletable.size} messages in ${channel.name}`);
+        logToSupabase(guildId, 'sys', `Cleaned up ${bulkDeletable.size} messages in #${channel.name}`);
       } else if (bulkDeletable.size === 1) {
         await bulkDeletable.first().delete();
-        console.log(`[G:${guildId}] [CleanChat] Deleted 1 message in ${channel.name}`);
+        console.log(`[G:${guildId}] [SYS] [CleanChat] Deleted 1 message in ${channel.name}`);
+        logToSupabase(guildId, 'sys', `Cleaned up 1 message in #${channel.name}`);
       }
     } catch (err) {
       if (err.code === 50013) {
@@ -1325,36 +1383,3 @@ export function startCleanChatTimer(client, guildId, channelId, intervalMs) {
   cleanTimers.set(timerKey, timerId);
 }
 
-/**
- * Custom fetcher for PetitLyrics (Japanese songs)
- * @param {string} title 
- * @returns {Promise<string|null>}
- */
-/**
- * Custom fetcher for PetitLyrics (Japanese songs)
- * Uses the stable internal API with a static client key to avoid CSRF/Session issues.
- * @param {string} title 
- * @returns {Promise<string|null>}
- */
-async function fetchPetitLyrics(title) {
-  try {
-    // PetitLyrics internal XML API endpoint
-    // Using a known public client_id and search priority 2 (text lyrics)
-    const url = `http://pl.t.petitlyrics.com/api/get_lyrics.php?title=${encodeURIComponent(title)}&client_id=p7PetitlyricsAndroid&key=VvVz_98&priority=2`;
-    const res = await axios.get(url);
-    const xml = res.data;
-
-    // Extract Base64 encoded lyricsData field from the XML response
-    const match = xml.match(/<lyricsData>(.*?)<\/lyricsData>/);
-    if (!match || !match[1]) return null;
-
-    const base64Data = match[1];
-    const decoded = Buffer.from(base64Data, 'base64').toString('utf8');
-
-    // Normalize newlines and trim
-    return decoded.replace(/\r\n/g, '\n').trim();
-  } catch (err) {
-    console.error('[PetitLyrics] API error:', err.message);
-    return null;
-  }
-}

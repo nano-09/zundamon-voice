@@ -4,89 +4,27 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Events, REST, Routes, MessageFlags, Partials } from 'discord.js';
 import { commandDefinitions, handleCommand, startCleanChatTimer } from './commands.js';
-import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel } from './player.js';
+import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel, isConnected as isBotConnected } from './player.js';
 import { initBotConfig, getBotConfig } from './botConfig.js';
 import { getGuildConfig, setGuildConfig, initConfigs, getFullGuildConfig, refreshConfig } from './config.js';
-import { initMcpClient } from './mcpClient.js';
-import { isGuildAuthorized, sendLocalOtp, verifyLocalOtp } from './auth.js';
+import { initMcpClient, isMcpReady } from './mcpClient.js';
+import { isGuildAuthorized, isGuildBlocked, sendLocalOtp, verifyLocalOtp } from './auth.js';
 import { initGuildTable, snapshotGuildAnalytics, logToSupabase, deleteGuildConfigFromDb } from './db_supabase.js';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import emojiRegex from 'emoji-regex';
 
-// ── Per-guild activity counters (reset every hourly snapshot) ─────────────────
-// Map<guildId, { texts_spoken, ai_queries, voice_minutes, errors, members_active, commands_used }>
-const guildCounters = new Map();
-
-// Tracks session-wide total commands per guild
-const sessionCommands = new Map();
-
-export function getGuildCounters(guildId) {
-  if (!guildCounters.has(guildId)) {
-    guildCounters.set(guildId, {
-      texts_spoken: 0,
-      ai_queries: 0,
-      voice_minutes: 0,
-      errors: 0,
-      members_active: new Set(),
-      commands_used: {},
-    });
-  }
-  return guildCounters.get(guildId);
-}
-
-export function incrementCounter(guildId, field, userId = null) {
-  const c = getGuildCounters(guildId);
-  if (field === 'texts_spoken') c.texts_spoken++;
-  else if (field === 'ai_queries') c.ai_queries++;
-  else if (field === 'voice_minutes') c.voice_minutes++;
-  else if (field === 'errors') c.errors++;
-  if (userId) c.members_active.add(userId);
-}
-
-export function incrementCommand(guildId, commandName) {
-  const c = getGuildCounters(guildId);
-  c.commands_used[commandName] = (c.commands_used[commandName] || 0) + 1;
-  sessionCommands.set(guildId, (sessionCommands.get(guildId) || 0) + 1);
-}
+import { getGuildCounters, incrementCounter, incrementCommand, getAllGuildCounters, getSessionCommands, getSessionTextsSpoken, getAndResetDeltas } from './stats.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const emojiDictPath = path.join(__dirname, 'emoji_ja.json');
-const emojiDict = JSON.parse(fs.readFileSync(emojiDictPath, 'utf8'));
-const customEmojisPath = path.join(__dirname, '..', 'custom_emojis.json');
-
-// ── Initialize Global Config (Async) ──────────────────────────────────────────
-const configPromise = initBotConfig();
-
-process.on('uncaughtException', (err) => {
-  console.error('[SYS] [CRITICAL] Uncaught Exception:', err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[SYS] [CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
 const envToken = process.env.DISCORD_TOKEN;
 const envClientId = process.env.CLIENT_ID;
 
-// ── Register slash commands (Background) ─────────────────────────────────────
-configPromise.then(() => {
-  const token = getBotConfig('DISCORD_TOKEN') || envToken;
-  const clientId = getBotConfig('CLIENT_ID') || envClientId;
-
-  if (token && clientId) {
-    const rest = new REST({ version: '10' }).setToken(token);
-    rest
-      .put(Routes.applicationCommands(clientId), { body: commandDefinitions })
-      .then(() => console.log('✅ スラッシュコマンドを登録しました。'))
-      .catch((err) => console.warn('⚠️ コマンド登録失敗:', err.message));
-  } else {
-    console.warn('⚠️ DISCORD_TOKEN または CLIENT_ID が未設定のため、スラッシュコマンド登録をスキップします。');
-  }
-});
-
-// ── Create Discord client ─────────────────────────────────────────────────────
+// ── 1. FAST-TRACK DISCORD LOGIN (ABSOLUTE PRIORITY) ──────────────────────────
+// Establishing the connection is our first priority to ensure the bot appears 
+// online as quickly as possible while other systems initialize in parallel.
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -99,133 +37,205 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
+let ownerUser    = null;
 let loginStarted = false;
+
 function tryLogin(token) {
   if (loginStarted || !token) return;
   loginStarted = true;
-  console.log('[SYS] [INIT] Attempting Discord login...');
+  console.log('[SYS] [INIT] Attempting Discord login (Fast-Track)...');
   client.login(token).catch(err => {
-    loginStarted = false; // reset for potential retry
-    console.warn(`[SYS] [WARN] Login failed: ${err.message}`);
+    loginStarted = false;
+    console.warn(`[SYS] [WARN] Fast-track login failed: ${err.message}`);
   });
 }
 
-// ── Fast-Track Login ──────────────────────────────────────────────────────────
 if (envToken) {
   tryLogin(envToken);
 }
 
+// ── 2. ASYNC INITIALIZATIONS ──────────────────────────────────────────────────
+// These are started in parallel with the Discord connection process.
+const configPromise = initBotConfig();
+
+// Load dictionary asynchronously to avoid blocking the event loop
+let emojiDict = {};
+(async () => {
+  try {
+    const emojiDictPath = path.join(__dirname, 'emoji_ja.json');
+    const data = await fs.promises.readFile(emojiDictPath, 'utf8');
+    emojiDict = JSON.parse(data);
+    console.log('[SYS] [INIT] Emoji dictionary loaded (Async).');
+  } catch (err) {
+    console.error('[SYS] [WARN] Failed to load emoji dictionary:', err.message);
+  }
+})();
+
+const customEmojisPath = path.join(__dirname, '..', 'custom_emojis.json');
+
+// ── 3. ERROR HANDLERS ─────────────────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+  console.error('[SYS] [CRITICAL] Uncaught Exception:', err);
+  logToSupabase(null, 'err', `Uncaught Exception: ${err.message}`);
+  // Global error count? 
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[SYS] [CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+  logToSupabase(null, 'err', `Unhandled Rejection: ${reason}`);
+});
+
+// ── 4. BACKGROUND TASKS ──────────────────────────────────────────────────────
+// Register slash commands once config is loaded (but don't block login)
+configPromise.then(() => {
+  const token = getBotConfig('DISCORD_TOKEN') || envToken;
+  const clientId = getBotConfig('CLIENT_ID') || envClientId;
+
+  if (token && clientId) {
+    // If login hasn't started yet (e.g. no envToken), try with vault token
+    if (!loginStarted) tryLogin(token);
+
+    const rest = new REST({ version: '10' }).setToken(token);
+    rest
+      .put(Routes.applicationCommands(clientId), { body: commandDefinitions })
+      .then(() => console.log('[SYS] ✅ スラッシュコマンドを登録しました。'))
+      .catch((err) => console.warn('⚠️ コマンド登録失敗:', err.message));
+  } else {
+    console.warn('⚠️ DISCORD_TOKEN または CLIENT_ID が未設定のため、スラッシュコマンド登録をスキップします。');
+  }
+});
+
 // ── Ready ─────────────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async (c) => {
-  await configPromise; // CRITICAL: Ensure all global configs are loaded before proceeding
   console.log(`[SYS] [INFO] Ready event fired! Bot user: ${c.user.tag}`);
-  console.log(`   VOICEVOX: ${getBotConfig('VOICEVOX_URL') || 'http://localhost:50021'}`);
-  console.log(`   スピーカー ID: ${getBotConfig('VOICEVOX_SPEAKER') || '3'} (ずんだもん)`);
 
-  // Initialize configs from Supabase
-  const guildIds = client.guilds.cache.map(g => g.id);
-  console.log(`[SYS] [INFO] Initializing configs for ${guildIds.length} guilds...`);
-  await initConfigs(guildIds);
-  console.log(`[SYS] [INFO] Config initialization complete.`);
-
-  // Resume clean chat intervals natively upon boot
-  // Resume clean chat intervals natively upon boot
-  for (const guildId of guildIds) {
-    const cfg = getGuildConfig(guildId);
-    if (cfg.cleanChatTasks) {
-      for (const [channelId, minutes] of Object.entries(cfg.cleanChatTasks)) {
-        if (minutes > 0) {
-          startCleanChatTimer(client, guildId, channelId, minutes * 60 * 1000);
-        }
+  // ── 1. IMMEDIATE HEARTBEAT & STATS LOOP ────────────────────────────────────
+  // We start this immediately so the dashboard sees us as "Online" right away.
+  broadcastStats();
+  const startStatsLoop = () => {
+    setInterval(broadcastStats, 5000);
+    // Trigger immediate broadcast on relevant events for "live" feel
+    client.on(Events.VoiceStateUpdate, (oldS, newS) => {
+      if (oldS.member.id === client.user.id || newS.member.id === client.user.id) {
+        broadcastStats();
       }
-    }
-  }
-
-  // ── Auto-rejoin stabilization ──────────────────────────────────────────────
-  // Wait a small amount after Ready for the gateway to stabilize
-  console.log(`[SYS] [INFO] Waiting 3 seconds for gateway to settle before auto-rejoin...`);
-  await new Promise(r => setTimeout(r, 3000));
-
-  // Auto-rejoin last voice channel
-  for (const guildId of guildIds) {
-    const cfg = getGuildConfig(guildId);
-    if (cfg.voiceChannelId) {
-      const channel = client.channels.cache.get(cfg.voiceChannelId);
-      if (channel && channel.isVoiceBased()) {
-        const humans = channel.members.filter(m => !m.user.bot);
-        if (humans.size === 0) {
-          console.log(`[SYS] Skipping auto-rejoin for empty channel: ${channel.name} (${guildId})`);
-          continue;
-        }
-        try {
-          await joinChannel(channel);
-          console.log(`[SYS] Auto-rejoined voice channel: ${channel.name} (${guildId})`);
-        } catch (err) {
-          console.error(`[SYS] Auto-rejoin failed for ${guildId}:`, err.message);
-        }
-      }
-    }
-  }
-
-  // Restart 2FA Flow for any unauthorized guilds found during startup
-  const ownerId = getBotConfig('OWNER_DISCORD_ID');
-  for (const guild of client.guilds.cache.values()) {
-    if (!isGuildAuthorized(guild.id)) {
-      console.log(`[SYS] Unauthorized guild detected on startup: ${guild.name} (${guild.id}). Starting 2FA flow.`);
-      await sendLocalOtp(guild.id, guild.name);
-      
-      if (ownerId) {
-        try {
-          const owner = await client.users.fetch(ownerId);
-          await owner.send(
-            `🔐 **サーバー認証リクエスト**\n\n` +
-            `ボットが未認証のサーバーに存在しています。\n` +
-            `📛 サーバー名: **${guild.name}**\n` +
-            `🆔 サーバーID: \`${guild.id}\`\n\n` +
-            `このサーバーを認証するには、**ボットからあなたのメールアドレスに送信された6桁の認証コード** をこのDMに返信してください。\n` +
-            `認証しない場合は無視してください。ボットはそのサーバーで機能しません。`
-          );
-        } catch (err) {
-          console.error('[2FA] Failed to DM owner on startup:', err.message);
-        }
-      }
-    }
-  }
-
-  // Pre-initialize the MCP server so the first search isn't delayed by NPX starting
-  initMcpClient().catch(err => console.error('[MCP] Pre-initialization failed:', err));
-
-  // Periodically log stats and sync heartbeats to Supabase
-  setInterval(() => {
-    const guildsDetail = client.guilds.cache.map(g => {
-      const full = getFullGuildConfig(g.id);
-      return {
-        id: g.id,
-        name: g.name,
-        icon: g.iconURL(),
-        memberCount: g.memberCount,
-        joined_at: g.joinedAt,
-        sessionCommands: sessionCommands.get(g.id) || 0,
-        voiceChannelId: g.members.me?.voice?.channelId || null,
-        textChannelId: full.settings.textChannelId || null,
-        status: full.status || 'Idle'
-      };
     });
+    client.on(Events.GuildCreate, () => broadcastStats());
+    client.on(Events.GuildDelete, () => broadcastStats());
+  };
+  startStatsLoop();
 
-    const stats = {
-      type: 'HEARTBEAT',
-      guilds: client.guilds.cache.size,
-      channels: client.channels.cache.size,
-      ping: Math.round(client.ws.ping),
-      uptime: client.uptime,
-      guildsDetail: guildsDetail,
-      user: {
-        username: client.user.username,
-        avatar: client.user.displayAvatarURL(),
+  // ── 2. BACKGROUND INITIALIZATION ───────────────────────────────────────────
+  // We run these in the background so they don't block the Ready event return.
+  (async () => {
+    try {
+      await configPromise;
+      
+      const ownerId = getBotConfig('OWNER_DISCORD_ID');
+      if (ownerId && !ownerUser) {
+        const user = await client.users.fetch(ownerId).catch(() => null);
+        if (user) {
+          ownerUser = user;
+          const ownerEmail = getBotConfig('OWNER_EMAIL');
+          const ownerStats = {
+            type: 'SYSTEM_INIT',
+            owner: {
+              username: user.username,
+              avatar: user.displayAvatarURL(),
+              email: ownerEmail || 'Not set'
+            }
+          };
+          console.log(`[SYS] [DASHBOARD_STATS] ${JSON.stringify(ownerStats)}`);
+        }
       }
-    };
-    console.log(`[SYS] [DASHBOARD_STATS] ${JSON.stringify(stats)}`);
-  }, 5000);
+
+      console.log(`   VOICEVOX: ${getBotConfig('VOICEVOX_URL') || 'http://localhost:50021'}`);
+      console.log(`   スピーカー ID: ${getBotConfig('VOICEVOX_SPEAKER') || '3'} (ずんだもん)`);
+
+      const guildIds = client.guilds.cache.map(g => g.id);
+      await initConfigs(guildIds);
+      console.log(`[SYS] [INFO] Config initialization complete.`);
+
+      // Resume clean chat intervals
+      for (const guildId of guildIds) {
+        const cfg = getGuildConfig(guildId);
+        if (cfg.cleanChatTasks) {
+          for (const [channelId, minutes] of Object.entries(cfg.cleanChatTasks)) {
+            if (minutes > 0) {
+              startCleanChatTimer(client, guildId, channelId, minutes * 60 * 1000);
+            }
+          }
+        }
+      }
+
+      // Auto-rejoin stabilization (Reduced wait to 1s)
+      console.log(`[SYS] [INFO] Waiting 1 second for gateway to settle before auto-rejoin...`);
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Parallel Auto-rejoin
+      const rejoinPromises = guildIds.map(async (guildId) => {
+        const cfg = getGuildConfig(guildId);
+        if (cfg.voiceChannelId) {
+          const channel = client.channels.cache.get(cfg.voiceChannelId);
+          if (channel && channel.isVoiceBased()) {
+            // Check if guild is blocked
+            if (isGuildBlocked(guildId)) {
+              console.log(`[G:${guildId}] [SYS] Skipping auto-rejoin: Guild is blocked.`);
+              return;
+            }
+
+            // REVISED: Only rejoin if the "last user" is present in the channel
+            const isLastUserPresent = cfg.lastUserId ? channel.members.has(cfg.lastUserId) : false;
+            
+            // If lastUserId is not saved yet (legacy), fallback to "any human"
+            const humans = channel.members.filter(m => !m.user.bot);
+            const shouldRejoin = cfg.lastUserId ? isLastUserPresent : (humans.size > 0);
+
+            if (!shouldRejoin) return;
+            
+            try {
+              await joinChannel(channel);
+              console.log(`[G:${guildId}] [SYS] Auto-rejoined voice channel: ${channel.name}`);
+              logToSupabase(guildId, 'sys', `Auto-rejoined voice channel: ${channel.name}`);
+            } catch (err) {
+              console.error(`[SYS] Auto-rejoin failed for ${guildId}:`, err.message);
+            }
+          }
+        }
+      });
+      await Promise.allSettled(rejoinPromises);
+
+      // Restart 2FA Flow for any unauthorized guilds found during startup
+      for (const guild of client.guilds.cache.values()) {
+        if (!isGuildAuthorized(guild.id)) {
+          console.log(`[SYS] Unauthorized guild detected on startup: ${guild.name} (${guild.id}). Starting 2FA flow.`);
+          await sendLocalOtp(guild.id, guild.name);
+          
+          if (ownerId) {
+            try {
+              const owner = await client.users.fetch(ownerId);
+              await owner.send(
+                `🔐 **サーバー認証リクエスト**\n\n` +
+                `ボットが未認証のサーバーに存在しています。\n` +
+                `📛 サーバー名: **${guild.name}**\n` +
+                `🆔 サーバーID: \`${guild.id}\`\n\n` +
+                `このサーバーを認証するには、**ボットからあなたのメールアドレスに送信された6桁の認証コード** をこのDMに返信してください。\n` +
+                `認証しない場合は無視してください。ボットはそのサーバーで機能しません。`
+              );
+            } catch (err) {
+              console.error('[2FA] Failed to DM owner on startup:', err.message);
+            }
+          }
+        }
+      }
+
+      // Pre-initialize the MCP server so the first search isn't delayed by NPX starting
+      initMcpClient().catch(err => console.error('[MCP] Pre-initialization failed:', err));
+
+      console.log('[SYS] [INIT] Startup background tasks finalized.');
+    } catch (err) {
+      console.error('[SYS] [CRITICAL] Background initialization failed:', err);
+    }
+  })();
 });
 
 // ── 2FA: Bot joins a new guild → DM owner with auth code ─────────────────────
@@ -298,6 +308,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await handleCommand(interaction);
   } catch (err) {
     console.error('[InteractionCreate]', err);
+    incrementCounter(interaction.guildId, 'errors', interaction.user.id);
+    
+    // Log failure to Command Log
+    const logMsg = `[CMD] User: ${interaction.user.username}, Command: /${interaction.commandName}, Status: Error (${err.message})`;
+    logToSupabase(interaction.guildId, 'cmd', logMsg);
+
+    emitLiveSnapshot(interaction.guildId, { errors: 1 });
+    broadcastStats();
+
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
     } else {
@@ -334,39 +353,96 @@ client.on(Events.MessageCreate, async (message) => {
   return;
 });
 
-// ── 1-minute analytics snapshot ──────────────────────────────────────────────
-setInterval(async () => {
-  for (const guildId of client.guilds.cache.keys()) {
-    const c = getGuildCounters(guildId);
-    
-    // Only log if there was actual activity in this minute
-    const hasActivity = 
-      c.texts_spoken > 0 || 
-      c.ai_queries > 0 || 
-      c.voice_minutes > 0 || 
-      c.errors > 0 || 
-      c.members_active.size > 0 || 
-      Object.keys(c.commands_used).length > 0;
+// ── Real-time Analytics Snapshot ──────────────────────────────────────────
+/**
+ * Emits a snapshot delta to the console for the dashboard and optionally saves to Supabase.
+ * @param {string} guildId 
+ * @param {object} deltaData 
+ */
+export async function emitLiveSnapshot(guildId, deltaData) {
+  const snapshotAt = new Date().toISOString();
+  // Delta for dashboard (prevents dashboard chart from having too many points)
+  console.log(`[SYS] [SNAPSHOT] ${JSON.stringify({ guildId, ...deltaData, snapshot_at: snapshotAt })}`);
+  
+  // Persistence to Supabase (We still want to save to DB, but maybe throttled or just as-is)
+  // For now, we save every live event to DB to ensure no data loss.
+  await snapshotGuildAnalytics(guildId, deltaData).catch(err => {
+    console.error(`[Supabase] Live snapshot failed for ${guildId}:`, err.message);
+  });
+}
 
-    if (hasActivity) {
-      await snapshotGuildAnalytics(guildId, {
-        texts_spoken:   c.texts_spoken,
-        ai_queries:     c.ai_queries,
-        voice_minutes:  c.voice_minutes,
-        errors:         c.errors,
-        members_active: c.members_active.size,
-        commands_used:  c.commands_used,
-      });
+/**
+ * Broadcasts bot status and guild details to the dashboard.
+ */
+export const broadcastStats = () => {
+  if (!client.isReady()) return;
+
+  const guildsDetail = client.guilds.cache.map(g => {
+    const full = getFullGuildConfig(g.id);
+    return {
+      id: g.id,
+      name: g.name,
+      icon: g.iconURL(),
+      memberCount: g.memberCount,
+      joined_at: g.joinedAt,
+      ttsCount: getSessionTextsSpoken(g.id), // Use session-wide total
+      cmdCount: getSessionCommands(g.id),    // Use session-wide total
+      voiceChannelId: g.members.me?.voice?.channelId || null,
+      voiceChannelName: g.members.me?.voice?.channel?.name || null,
+      textChannelId: full.settings.textChannelId || null,
+      textChannelName: client.channels.cache.get(full.settings.textChannelId)?.name || null,
+      status: full.status || '待機中'
+    };
+  });
+
+  const wsStatus = client.ws.status;
+  const wsPing   = Math.round(client.ws.ping);
+  const isOnline = client.isReady() && wsPing >= 0 && wsStatus === 0;
+
+  const stats = {
+    type: 'HEARTBEAT',
+    status: isOnline ? 'online' : (wsStatus === 1 || wsStatus === 2 ? 'connecting' : 'offline'),
+    guilds: client.guilds.cache.size,
+    channels: client.channels.cache.size,
+    ping: Math.round(client.ws.ping),
+    uptime: client.uptime,
+    websearchStatus: isMcpReady() ? 'online' : 'connecting',
+    guildsDetail: guildsDetail,
+    user: {
+      username: client.user.username,
+      avatar: client.user.displayAvatarURL(),
+    },
+    owner: {
+      username: ownerUser?.username || 'Owner',
+      avatar: ownerUser?.displayAvatarURL?.() || null,
+      email: getBotConfig('OWNER_EMAIL') || 'Not set'
     }
+  };
+  console.log(`[SYS] [DASHBOARD_STATS] ${JSON.stringify(stats)}`);
+};
 
-    // Reset counters after snapshot (or if skipping to ensure they stay 0)
-    guildCounters.set(guildId, {
-      texts_spoken: 0, ai_queries: 0, voice_minutes: 0, errors: 0,
-      members_active: new Set(), commands_used: {},
-    });
+// ── Background Maintenance (1-minute interval for time-based metrics) ────────
+setInterval(async () => {
+  if (!client.isReady()) return;
+
+  for (const guildId of client.guilds.cache.keys()) {
+    const guild = client.guilds.cache.get(guildId);
+    const botMember = guild.members.me;
+    
+    // Voice Minutes Tracking
+    if (botMember?.voice?.channelId) {
+      // Check if there are other humans in the channel
+      const channel = botMember.voice.channel;
+      const humans = channel.members.filter(m => !m.user.bot);
+      if (humans.size > 0) {
+        incrementCounter(guildId, 'voice_minutes');
+        emitLiveSnapshot(guildId, { voice_minutes: 1 });
+      }
+    }
   }
-  console.log('[SYS] 1-minute guild analytics snapshot evaluated.');
-}, 1 * 60 * 1000); // every 1 minute
+  broadcastStats();
+  console.log('[SYS] Background maintenance tick (voice minutes updated).');
+}, 1 * 60 * 1000);
 
 // ── Message listener → TTS ───────────────────────────────────────────────────
 client.on(Events.MessageCreate, async (message) => {
@@ -432,13 +508,6 @@ client.on(Events.MessageCreate, async (message) => {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Apply User Dictionary (whisperDict) replacements
-  const userDict = cfg.whisperDict || {};
-  for (const [wrong, correct] of Object.entries(userDict)) {
-    // Escape special regex chars in the "wrong" word to prevent crashes
-    const escaped = wrong.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    text = text.replace(new RegExp(escaped, 'g'), correct);
-  }
 
   // Handle attachments/embeds with no text
   if (!text) {
@@ -457,9 +526,23 @@ client.on(Events.MessageCreate, async (message) => {
     fullText = cfg.readName === false ? trimmedText : `${name}。${trimmedText}`;
   }
 
-  enqueue(message.guild.id, fullText, message.author.id);
-  // Track TTS activity for analytics
-  incrementCounter(message.guild.id, 'texts_spoken', message.author.id);
+    // Track TTS activity for analytics - only if bot is in a voice channel
+    const botVoiceChannelId = message.guild.members.me?.voice?.channelId;
+    if (botVoiceChannelId) {
+      enqueue(message.guild.id, fullText, message.author.id, name);
+      incrementCounter(message.guild.id, 'texts_spoken', message.author.id);
+      
+      // Immediate Reporting
+      emitLiveSnapshot(message.guild.id, { texts_spoken: 1 });
+      broadcastStats();
+
+      // Log to Supabase and Console for Dashboard
+      const logMsg = `[TTS] User: ${name}, Text: ${text.slice(0, 100)}${text.length > 100 ? '...' : ''}`;
+      console.log(`[G:${message.guild.id}] ${logMsg}`);
+      logToSupabase(message.guild.id, 'tts', logMsg);
+    } else {
+    console.log(`[TTS] [DEBUG] Skipping: Bot is not in a voice channel in guild ${message.guild.id}.`);
+  }
 });
 
 // ── Voice State Update (Auto-disconnect & Announcements) ──────────────────────
@@ -473,24 +556,53 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     if (channel && channel.id === botChannelId) {
       const humanMembers = channel.members.filter(m => !m.user.bot);
       if (humanMembers.size === 0) {
+        console.log(`[G:${guildId}] [SYS] No humans left in #${channel.name}. Recording last user ${oldState.member?.user.tag} and disconnecting.`);
         leaveChannel(guildId);
-        setGuildConfig(guildId, { voiceChannelId: null });
+        // Record last user but KEEP channel ID for potential return
+        setGuildConfig(guildId, { lastUserId: oldState.member?.id });
       }
     }
   }
 
   // Voice Chat Announcements logic
   const isBot = newState.member?.user.bot || oldState.member?.user.bot;
-  if (!isBot && botChannelId && getGuildConfig(guildId).announceVoice && !getGuildConfig(guildId).karaokeMode) {
+  const botMember = oldState.guild.members.me;
+
+  // Log voice state changes for bot
+  if (newState.member?.id === client.user.id) {
+    if (!oldState.channelId && newState.channelId) {
+      const logMsg = `[SYS] Joined voice channel: ${newState.channel.name}`;
+      console.log(`[G:${guildId}] ${logMsg}`);
+      logToSupabase(guildId, 'sys', logMsg);
+    } else if (oldState.channelId && !newState.channelId) {
+      const logMsg = `[SYS] Left voice channel: ${oldState.channel.name}`;
+      console.log(`[G:${guildId}] ${logMsg}`);
+      logToSupabase(guildId, 'sys', logMsg);
+    } else if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
+      const logMsg = `[SYS] Moved voice channel: ${oldState.channel.name} -> ${newState.channel.name}`;
+      console.log(`[G:${guildId}] ${logMsg}`);
+      logToSupabase(guildId, 'sys', logMsg);
+    }
+  }
+
+  // Log voice state changes for users (if in same channel)
+  if (!isBot && botChannelId) {
     const displayName = newState.member?.displayName || oldState.member?.displayName;
-    if (displayName) {
-      // User joined the bot's channel
-      if (newState.channelId === botChannelId && oldState.channelId !== botChannelId) {
-        enqueue(guildId, `${displayName}さんが入室したのだ`);
+    if (newState.channelId === botChannelId && oldState.channelId !== botChannelId) {
+      const logMsg = `[VOICE] User joined: ${displayName}`;
+      console.log(`[G:${guildId}] ${logMsg}`);
+      logToSupabase(guildId, 'sys', logMsg);
+      
+      if (getGuildConfig(guildId).announceVoice && !getGuildConfig(guildId).karaokeMode) {
+        enqueue(guildId, `${displayName}さんが入室したのだ`, newState.member?.id, displayName);
       }
-      // User left the bot's channel
-      else if (oldState.channelId === botChannelId && newState.channelId !== botChannelId) {
-        enqueue(guildId, `${displayName}さんが退室したのだ`);
+    } else if (oldState.channelId === botChannelId && newState.channelId !== botChannelId) {
+      const logMsg = `[VOICE] User left: ${displayName}`;
+      console.log(`[G:${guildId}] ${logMsg}`);
+      logToSupabase(guildId, 'sys', logMsg);
+
+      if (getGuildConfig(guildId).announceVoice && !getGuildConfig(guildId).karaokeMode) {
+        enqueue(guildId, `${displayName}さんが退室したのだ`, oldState.member?.id, displayName);
       }
     }
   }
@@ -607,6 +719,19 @@ process.stdin.on('data', async (data) => {
       })();
     } else {
       console.warn(`[SYS] LIST_MEMBERS_ROLES: Guild ${guildId} not found in cache.`);
+    }
+  }
+  if (msg.startsWith('LIST_CHANNELS:')) {
+    const guildId = msg.split(':')[1];
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      const channels = guild.channels.cache
+        .filter(c => c.isTextBased())
+        .map(c => ({ id: c.id, name: c.name }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      console.log(`[SYS] [CHANNELS] ${JSON.stringify({ guildId, channels })}`);
+    } else {
+      console.warn(`[SYS] LIST_CHANNELS: Guild ${guildId} not found in cache.`);
     }
   }
 });

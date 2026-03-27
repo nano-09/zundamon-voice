@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
+import { DEFAULT_PERMISSIONS } from './constants.js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -21,6 +22,7 @@ export async function initGuildTable(guild) {
       icon_url: guild.iconURL({ dynamic: true, size: 128 }) ?? null,
       owner_id: guild.ownerId,
       member_count: guild.memberCount,
+      permissions: DEFAULT_PERMISSIONS,
       joined_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -163,6 +165,22 @@ export async function logToSupabase(guildId, type, message) {
   }
 }
 
+/**
+ * Clears all error logs from the database.
+ */
+export async function clearErrorLogs() {
+  try {
+    const { error } = await supabase
+      .from('logs_v2')
+      .delete()
+      .eq('type', 'err');
+    if (error) throw error;
+  } catch (err) {
+    console.error(`[Supabase] clearErrorLogs error:`, err.message);
+    throw err;
+  }
+}
+
 export async function deleteGuildConfigFromDb(guildId) {
   try {
     const { error } = await supabase
@@ -173,23 +191,6 @@ export async function deleteGuildConfigFromDb(guildId) {
     console.log(`[Supabase] Guild config deleted: ${guildId}`);
   } catch (err) {
     console.error(`[Supabase] deleteGuildConfigFromDb error for ${guildId}:`, err.message);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
-// COMMAND TRACKING (fine-grained per-execution)
-// ═══════════════════════════════════════════════════════════
-export async function trackCommandExecution(guildId, commandName, userId) {
-  try {
-    const { error } = await supabase.from('command_usage').insert([{
-      guild_id:     guildId,
-      command_name: commandName,
-      user_id:      userId,
-      timestamp:    new Date().toISOString(),
-    }]);
-    if (error) throw error;
-  } catch (err) {
-    // Silent fail
   }
 }
 

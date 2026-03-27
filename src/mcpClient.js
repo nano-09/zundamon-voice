@@ -72,3 +72,7 @@ export async function callMcpTool(name, args) {
     return null;
   }
 }
+
+export function isMcpReady() {
+  return mcpClient !== null;
+}
