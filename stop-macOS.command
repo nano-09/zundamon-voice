@@ -11,6 +11,7 @@ echo ""
 
 # 1. Stop Ollama
 echo "[1/4] Closing Ollama..."
+osascript -e 'quit app "Ollama"' > /dev/null 2>&1
 pkill -f "ollama run" > /dev/null 2>&1
 pkill -f "ollama serve" > /dev/null 2>&1
 pkill -f "Ollama" > /dev/null 2>&1

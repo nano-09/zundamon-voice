@@ -20,6 +20,16 @@ class Program
             }
         } catch {}
 
+        if (isDashboardRunning) {
+            Console.WriteLine("========================================================");
+            Console.WriteLine("Zundamon Bot is already running!");
+            Console.WriteLine("If you want to restart it, please run ShutdownZundamon.bat first.");
+            Console.WriteLine("========================================================");
+            Console.WriteLine("Press any key to exit...");
+            Console.ReadKey();
+            return;
+        }
+
         // 1. Start Ollama (minimized)
         try {
             Process.Start(new ProcessStartInfo {

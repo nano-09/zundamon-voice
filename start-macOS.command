@@ -22,13 +22,24 @@ echo "Starting Zundamon Ecosystem..."
 echo "Node version: $(node -v)"
 echo "========================================================"
 
+# Check if the bot is already running
+if lsof -i :3000 > /dev/null 2>&1 || curl -s http://localhost:3000 > /dev/null 2>&1; then
+    echo "========================================================"
+    echo "Zundamon Bot is already running!"
+    echo "If you want to restart it, please run 'stop-macOS.command' first."
+    echo "========================================================"
+    read -p "Press [Enter] to exit..."
+    exit 0
+fi
+
 # Install or update dependencies
 echo "Ensuring dependencies are installed..."
 npm install > /dev/null
 
-# 1. Start Ollama (in background)
+# 1. Start Ollama
 echo "[1/3] Starting Ollama..."
-ollama serve &> /dev/null &
+# Try to start the macOS app in the background, fallback to CLI if not installed as an app
+open -g -a Ollama 2>/dev/null || (export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin; ollama serve &> /dev/null &)
 
 # 2. Start Voicevox (launch app)
 # Assumes VOICEVOX is installed in /Applications
