@@ -1,19 +1,47 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { execSync } from 'child_process';
 
 let mcpClient = null;
+
+/**
+ * On macOS, GUI-launched .command files don't inherit the full login PATH.
+ * This function resolves the npx binary from common install locations.
+ */
+function getNpxCommand() {
+  if (process.platform === 'win32') return 'npx.cmd';
+  try {
+    // Try to find npx from the shell's actual PATH
+    const npxPath = execSync('which npx 2>/dev/null || echo ""', { shell: '/bin/zsh', env: { ...process.env, PATH: `${process.env.HOME}/.nvm/versions/node/$(ls ${process.env.HOME}/.nvm/versions/node 2>/dev/null | tail -1)/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` } }).toString().trim();
+    if (npxPath && npxPath !== '') return npxPath;
+  } catch (_) {}
+  // Fallback: common macOS node install paths
+  const candidates = [
+    '/opt/homebrew/bin/npx',
+    '/usr/local/bin/npx',
+    '/usr/bin/npx',
+  ];
+  for (const c of candidates) {
+    try { execSync(`test -x "${c}"`, { shell: '/bin/sh' }); return c; } catch (_) {}
+  }
+  return 'npx'; // last resort
+}
 
 export async function initMcpClient() {
   if (mcpClient) return mcpClient;
 
-  console.log('[MCP] Initializing open-websearch MCP server...');
+  const npxCmd = getNpxCommand();
+  console.log(`[MCP] Initializing open-websearch MCP server (npx: ${npxCmd})...`);
   const transport = new StdioClientTransport({
-    command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    command: npxCmd,
     args: ['-y', 'open-websearch@latest'],
     env: {
       ...process.env,
       DEFAULT_SEARCH_ENGINE: 'duckduckgo',
       MODE: 'stdio',
+      PORT: '0',
+      // Ensure PATH includes common node binary locations
+      PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
     },
     stderr: 'ignore' // Stop it from flooding the dashboard console with its startup logs
   });

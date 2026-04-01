@@ -254,6 +254,8 @@ app.get('/api/analytics', async (req, res) => {
 });
 
 let botProcess = null;
+let isBotStopping = false; // true while we're waiting for the old process to fully exit
+let pendingStart = false;  // if start was requested while stopping, start again after close
 // Pending one-shot callbacks for LIST_MEMBERS_ROLES responses
 const pendingMembersRoles = new Map(); // guildId -> { resolve, timeout }
 const pendingChannels     = new Map(); // guildId -> { resolve, timeout }
@@ -316,7 +318,14 @@ function getRAM() {
 
 // ═══ BOT PROCESS MANAGEMENT ═══
 function startBot() {
+  if (isBotStopping) {
+    // Queue a start — it will fire once the current process fully exits
+    pendingStart = true;
+    return;
+  }
   if (botProcess) return;
+  isBotStopping = false;
+  pendingStart = false;
   const projectRoot = path.join(__dirname, '..');
   botProcess = spawn('node', ['src/index.js'], { cwd: projectRoot });
 
@@ -423,14 +432,22 @@ function startBot() {
   botProcess.on('close', (code) => {
     io.emit('log', { text: `[SYS] ボットが終了しました (コード ${code})`, type: 'sys' });
     botProcess = null;
+    isBotStopping = false;
     io.emit('stats_update', { type: 'HEARTBEAT', status: '待機中', guilds: 0, uptime: 0, ping: 0 }); // Clear stats
+    // If a start was requested while we were shutting down, honour it now
+    if (pendingStart) {
+      pendingStart = false;
+      setTimeout(startBot, 500);
+    }
   });
 }
 
 function stopBot() {
   if (botProcess) {
+    isBotStopping = true;
+    pendingStart = false;
     const p = botProcess;
-    p.stdin.write('SHUTDOWN\n');
+    try { p.stdin.write('SHUTDOWN\n'); } catch(e) {}
     setTimeout(() => { 
       // Hard kill the specific process instance if it's still somehow alive
       try { p.kill('SIGKILL'); } catch(e) {} 

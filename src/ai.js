@@ -41,7 +41,7 @@ export async function searchWeb(guildId, query, userId = null, maxResults = 5) {
     const result = await callMcpTool('search', {
       query: query,
       limit: 10,
-      engines: ['brave', 'duckduckgo']
+      engines: ['duckduckgo']
     });
 
     if (!result || !result.content || result.content.length === 0) {

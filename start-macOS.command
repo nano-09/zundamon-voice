@@ -22,15 +22,22 @@ echo "Starting Zundamon Ecosystem..."
 echo "Node version: $(node -v)"
 echo "========================================================"
 
-# Check if the bot is already running
-if lsof -i :3000 > /dev/null 2>&1 || curl -s http://localhost:3000 > /dev/null 2>&1; then
-    echo "========================================================"
-    echo "Zundamon Bot is already running!"
-    echo "If you want to restart it, please run 'stop-macOS.command' first."
-    echo "========================================================"
-    read -p "Press [Enter] to exit..."
-    exit 0
-fi
+# Check if the bot is already running (wait up to 3s for any lingering port to clear)
+for i in 1 2 3; do
+    if lsof -i :3000 > /dev/null 2>&1; then
+        if [ "$i" -eq 3 ]; then
+            echo "========================================================"
+            echo "Zundamon Bot is already running!"
+            echo "If you want to restart it, please run 'stop-macOS.command' first."
+            echo "========================================================"
+            read -p "Press [Enter] to exit..."
+            exit 0
+        fi
+        sleep 1
+    else
+        break
+    fi
+done
 
 # Install or update dependencies
 echo "Ensuring dependencies are installed..."

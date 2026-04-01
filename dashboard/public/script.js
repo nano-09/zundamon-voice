@@ -292,18 +292,24 @@ socket.on('stats_update', (data) => {
       statusPill.className = 'status-online-pill online';
     }
     setPip('pip-bot', 'online');
+    if (el('btn-start')) el('btn-start').style.display = 'none';
+    if (el('btn-stop')) el('btn-stop').style.display = 'inline-block';
   } else if (data.status === 'connecting') {
     if (statusPill) {
       statusPill.textContent = '● 接続中';
       statusPill.className = 'status-online-pill connecting';
     }
     setPip('pip-bot', 'warning');
+    if (el('btn-start')) el('btn-start').style.display = 'none';
+    if (el('btn-stop')) el('btn-stop').style.display = 'inline-block';
   } else {
     if (statusPill) {
       statusPill.textContent = '● オフライン';
       statusPill.className = 'status-online-pill offline';
     }
     setPip('pip-bot', 'error');
+    if (el('btn-start')) el('btn-start').style.display = 'inline-block';
+    if (el('btn-stop')) el('btn-stop').style.display = 'none';
   }
 
   // Watchdog: detect if heartbeats stop entirely
@@ -315,6 +321,8 @@ socket.on('stats_update', (data) => {
       pill.className = 'status-online-pill offline';
     }
     setPip('pip-bot', 'error');
+    if (el('btn-start')) el('btn-start').style.display = 'inline-block';
+    if (el('btn-stop')) el('btn-stop').style.display = 'none';
     showToast('📡 ボットへの接続が失われました。', 'error');
   }, 10000); // 10 seconds without HB = disconnected
 
@@ -1488,6 +1496,7 @@ el('btn-restart')?.addEventListener('click', () => {
   }
 });
 el('btn-stop')?.addEventListener('click', () => { socket.emit('stop_bot'); showToast('⏹ 停止をリクエストしました…', 'pending'); });
+el('btn-start')?.addEventListener('click', () => { socket.emit('start_bot'); showToast('▶ 起動をリクエストしました…', 'pending'); });
 el('btn-kill-all')?.addEventListener('click', () => { if (confirm('全サービスを終了しますか？')) { socket.emit('kill_all'); showToast('⏻ シャットダウン中…', 'pending'); } });
 
 // ── Utility ───────────────────────────────────────────────────────────────────
