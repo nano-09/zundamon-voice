@@ -11,16 +11,16 @@ Discordのボイスチャンネルで**ずんだもん**と直接おしゃべり
 | 機能 | 説明 |
 |------|------|
 | 🗣️ テキスト読み上げ | テキストチャンネルのメッセージをずんだもんの声で読み上げ |
-| 🤖 AI音声会話 | ボイスチャンネルで話しかけると、ずんだもんがAIで考えて声で返事 |
-| 🌐 Web検索 (MCP) | MCP open-websearch で最新のネット情報を検索して回答 |
+| 🌐 Web検索 (MCP) | `/search` コマンドで最新のネット情報を検索して、ずんだもんが回答 |
 | 🎤 ユーザー別の声設定 | ユーザーごとに話者IDと音声パラメータ（速度・ピッチ・音量）を記憶 |
 | 🧹 自動チャット削除 | 指定した時間ごとにチャンネルのメッセージを自動クリーンアップ |
 | 😭 絵文字の読み上げ | 絵文字を日本語の感情表現に変換して読み上げ |
 | 🎵 カラオケモード | YouTubeから音楽を再生・歌詞表示。`/play` で自動オン、終了で自動オフ |
+| 🎛️ 音楽コントローラー | Discordのインタラクティブなボタンで再生/一時停止、スキップ、リアルタイムの再生時間表示が可能 |
 | 🔊 サウンドボード | `/soundboard` でオンオフ。キーワードに反応してサウンドを再生 |
 | 📊 Premium Dashboard | モダンスタイルな管理画面でBotの状態、リソース、統計をリアルタイム監視 |
 | 🔒 セキュリティ管理 | 新規サーバー参加時の2FA（DM認証）とコマンドごとのロール権限設定 |
-| 🔥 ワンクリック起動/終了 | `.exe` で全サービスを一括起動、ボタン一つで一括終了 |
+| 🍎 マルチOS対応 | Windows用のワンクリック起動（.exe）とmacOS用の専用起動スクリプトを用意 |
 
 ---
 
@@ -29,9 +29,8 @@ Discordのボイスチャンネルで**ずんだもん**と直接おしゃべり
 | ソフトウェア | 用途 | ダウンロード |
 |-------------|------|-------------|
 | **Node.js** v18+ | ボット本体 | [nodejs.org](https://nodejs.org/) |
-| **Ollama** | ローカルAI (LLM) | [ollama.com](https://ollama.com/) |
 | **VOICEVOX** | ずんだもんの声合成 | [voicevox.hiroshiba.jp](https://voicevox.hiroshiba.jp/) |
-| **yt-dlp** | YouTube音楽再生 | [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp/releases) |
+| **Ollama** | ローカルAI (※ `/search` 機能に必要) | [ollama.com](https://ollama.com/) |
 | **Discord Bot Token** | Bot認証 | [Developer Portal](https://discord.com/developers/applications) |
 
 > ⚠️ Developer Portal → 対象のBot → **Privileged Gateway Intents** → **Message Content Intent** を必ずオンにしてください。
@@ -71,12 +70,12 @@ Discordのボイスチャンネルで**ずんだもん**と直接おしゃべり
 ### Step 1: 外部ツールの準備
 
 ```bash
-# Ollamaインストール後、AIモデルをダウンロード (約4.7GB, 6GB VRAMで動作)
+# （任意）/search コマンドを使用する場合、Ollamaインストール後、AIモデルをダウンロード (約4.7GB, 6GB VRAM以上推奨)
 ollama pull qwen2.5:7b
 ```
 
-**yt-dlp** をインストールし、パス（PATH）が通っていることを確認する。
-VOICEVOXはインストールするだけでOK。起動はランチャーが自動で行います。
+VOICEVOXはインストールするだけでOKです。起動はランチャーが自動で行います。
+※YouTube再生用の `ffmpeg` などの依存関係は Node のインストール時に自動でセットアップされます。
 
 ---
 
@@ -142,24 +141,42 @@ node deploy-commands.js
 
 ---
 
-### Step 5: ランチャーの作成と起動
+### Step 5: Botとシステムの起動
 
+OSに合わせて以下の手順で起動してください。
+
+#### 🪟 Windowsの場合
+ランチャーを作成し、ダブルクリックで一括起動します。
 ```bash
 C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -out:StartZundamon.exe Launcher.cs
 ```
 
 **`StartZundamon.exe`** をダブルクリックすると、以下が全自動で立ち上がります：
-
-1. ✅ Ollama
+1. ✅ Ollama (インストールされている場合)
 2. ✅ VOICEVOX
 3. ✅ Web Dashboard & Discord Bot
 4. ✅ ブラウザでダッシュボード（`http://localhost:3000`）が自動で開く
 
-#### 終了方法
+**終了方法（Windows）**
 - ダッシュボード上の 🔥 **SHUTDOWN ECOSYSTEM** ボタンをクリック
 - または `ShutdownZundamon.bat` を実行
 
 ---
+
+#### 🍎 macOSの場合
+専用の起動用スクリプトを使って一括起動します。VOICEVOXアプリがインストール済みであることを確認してください。
+
+```bash
+# スクリプトに実行権限を付与（初回のみ）
+chmod +x start-macOS.command
+
+# 起動
+./start-macOS.command
+```
+または、Finderから `start-macOS.command` をダブルクリックしても起動できます。
+
+**終了方法（macOS）**
+- スクリプトが実行されているターミナルウィンドウで `Ctrl + C` を押して終了します。
 
 ## 🎮 コマンド一覧
 
@@ -219,22 +236,20 @@ Zundamonは各サーバーごとに独立したサウンドボード音源とカ
 
 ---
 
-## 🧠 AI処理の流れ
+## 🧠 AI処理の流れ (`/search` コマンド実行時)
 
 ```
-🎤 ユーザーが話す
-  ↓
-🔊 Whisper が音声を日本語テキストに変換
+⌨️ ユーザーが /search コマンドで質問する
   ↓
 📖 カスタム辞書でスペル修正（/addwordのルール適用）
   ↓
-🔧 Ollamaが固有名詞の誤変換を自動補正
+🔧 Ollamaが固有名詞の誤変換を自動補正、最適な検索キーワードを生成
   ↓
-🌐 MCP open-websearch でWeb検索（必要に応じて自動発動）
+🌐 MCP open-websearch でWeb検索を自動実行
   ↓
-💬 ずんだもんのキャラで日本語回答生成 + 固有名詞はひらがなに変換
+💬 ずんだもんのキャラで日本語回答生成 + 検索結果を元に要約
   ↓
-🔊 VOICEVOX でずんだもんの声に合成して再生
+🔊 (VC接続時) VOICEVOX でずんだもんの声に合成して再生しつつテキスト返信
 ```
 
 ---
@@ -248,9 +263,9 @@ zundamon-voice/
 │   └── public/             # フロントエンド (HTML/CSS/JS)
 ├── src/
 │   ├── index.js            # Discordクライアント・イベント処理
-│   ├── ai.js               # Whisper音声認識 + Ollama LLM + MCP Web検索
+│   ├── ai.js               # Ollama LLM + MCP Web検索
 │   ├── commands.js         # 全スラッシュコマンド定義・ハンドラ
-│   ├── player.js           # ボイス接続・TTS/音楽キュー管理 (yt-dlp経由)
+│   ├── player.js           # ボイス接続・TTS/音楽キュー・インタラクティブUI管理
 │   ├── tts.js              # VOICEVOX TTS合成
 │   ├── config.js           # サーバー/ユーザー設定の永続化
 │   ├── db.js               # Supabase会話メモリー管理
@@ -258,8 +273,9 @@ zundamon-voice/
 │   └── mcpClient.js        # MCP Web検索クライアント
 ├── sounds/                 # サウンドボード用音声ファイル
 ├── soundboard.json         # サウンドボードのキーワード→ファイルマッピング
-├── Launcher.cs             # C#製ワンクリック起動ランチャー
-├── ShutdownZundamon.bat    # 全プロセス一括終了スクリプト
+├── Launcher.cs             # C#製ワンクリック起動ランチャー (Windows向け)
+├── ShutdownZundamon.bat    # 全プロセス一括終了スクリプト (Windows向け)
+├── start-macOS.command     # macOS用起動スクリプト
 ├── deploy-commands.js      # スラッシュコマンドのDiscord登録
 ├── .env.example            # 環境変数テンプレート
 └── package.json
@@ -273,8 +289,7 @@ zundamon-voice/
 |------|---------|
 | コマンドが Discord に表示されない | `node deploy-commands.js` を実行してコマンドを登録 |
 | Message Content Intent エラー | Developer Portal でBot設定の Intent をオンにする |
-| VOICEVOX接続エラー | VOICEVOXアプリが起動していることを確認（port 50021） |
-| Whisperが固有名詞を間違える | AIが自動で文脈から補正を試みます |
-| YouTube音楽が再生されない | `yt-dlp` がインストールされており、PATHが通っていることを確認 |
-| AI会話モードが起動しない | Ollamaが起動していることを確認（`ollama serve`） |
+| VOICEVOX接続エラー | VOICEVOXアプリが手動で起動しているか確認（port 50021） |
+| /search コマンドが機能しない | Ollamaが起動していることを確認（`ollama serve`）。Ollamaが不要な場合は設定や使用を控える |
+| 音楽再生時、一部のYouTube動画が再生できない | `youtube-dl-exec` の一部制限です。年齢制限などがある動画は再生できない場合があります |
 | 新しいサーバーで使えない | オーナーへの2FAメールが届いているか確認し、リンクを承認する |
