@@ -35,6 +35,13 @@ export const commandDefinitions = [
     .addSubcommand(sub => sub.setName('volume').setDescription('音量を設定するのだ').addNumberOption(opt => opt.setName('value').setDescription('音量 (標準: 1.0)').setRequired(true))),
 
   new SlashCommandBuilder()
+    .setName('preset')
+    .setDescription('あなたの声の設定（話者、速度、ピッチ、音量）を保存・読み込みするのだ')
+    .addSubcommand(sub => sub.setName('save').setDescription('現在の声の設定をプリセットとして保存するのだ').addStringOption(opt => opt.setName('name').setDescription('プリセット名').setRequired(true)))
+    .addSubcommand(sub => sub.setName('load').setDescription('保存したプリセットを読み込むのだ').addStringOption(opt => opt.setName('name').setDescription('プリセット名').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub.setName('list').setDescription('保存されているプリセット一覧を表示するのだ')),
+
+  new SlashCommandBuilder()
     .setName('setchannel')
     .setDescription('読み上げるテキストチャンネルを設定します')
     .addChannelOption((opt) =>
@@ -223,7 +230,8 @@ const ALL_COMMAND_NAMES = [
   'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume',
   'set-server', 'set-server voice', 'set-server speed', 'set-server pitch', 'set-server volume',
   'customsound add', 'customsound remove', 'customsound list',
-  'customemoji add', 'customemoji remove', 'customemoji list', 'loop'
+  'customemoji add', 'customemoji remove', 'customemoji list', 'loop',
+  'preset save', 'preset load', 'preset list'
 ];
 
 const VOICES_LIST = [
@@ -244,11 +252,24 @@ const VOICES_LIST = [
 export async function handleAutocomplete(interaction) {
   const focusedOption = interaction.options.getFocused(true);
 
-  if (interaction.commandName === 'set' || interaction.commandName === 'set-server') {
+  if (interaction.commandName === 'set' || interaction.commandName === 'set-server' || (interaction.commandName === 'preset' && focusedOption.name === 'name')) {
     if (focusedOption.name === 'voiceid') {
       const q = String(focusedOption.value).toLowerCase();
       const filtered = VOICES_LIST.filter(v => v.name.includes(q)).slice(0, 25);
       await interaction.respond(filtered);
+    } else if (focusedOption.name === 'name') {
+      try {
+        const guildId = interaction.guildId;
+        const userId = interaction.user.id;
+        const cfg = getGuildConfig(guildId);
+        const presets = cfg?.userPresets?.[userId] || {};
+        const presetNames = Object.keys(presets);
+        const q = String(focusedOption.value).toLowerCase();
+        const filtered = presetNames.filter(name => name.toLowerCase().includes(q)).slice(0, 25);
+        await interaction.respond(filtered.map(name => ({ name, value: name })));
+      } catch (e) {
+        await interaction.respond([]);
+      }
     }
   } else if (interaction.commandName === 'permissions') {
     if (focusedOption.name === 'command') {
@@ -500,6 +521,93 @@ export async function handleCommand(interaction) {
       content: `✅ あなたの **${sub}** を **${value}** に設定したのだ！`,
       flags: [MessageFlags.Ephemeral],
     });
+  }
+
+  // ── /preset ──────────────────────────────────────────────────
+  if (commandName === 'preset') {
+    const sub = interaction.options.getSubcommand();
+    const cfg = getFullGuildConfig(guild.id).settings;
+    const userId = interaction.user.id;
+
+    if (!cfg.userPresets) cfg.userPresets = {};
+    if (!cfg.userPresets[userId]) cfg.userPresets[userId] = {};
+
+    if (sub === 'save') {
+      const presetName = interaction.options.getString('name');
+      const voiceId = cfg.userVoices?.[userId] ?? cfg.speakerId ?? 3;
+      const userParams = cfg.userParams?.[userId] || {};
+      const speed = userParams.speed ?? cfg.speed ?? 1.0;
+      const pitch = userParams.pitch ?? cfg.pitch ?? 0.0;
+      const volume = userParams.volume ?? cfg.volume ?? 1.0;
+
+      cfg.userPresets[userId][presetName] = { voiceId, speed, pitch, volume };
+      setGuildConfig(guild.id, { userPresets: cfg.userPresets });
+
+      const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(voiceId));
+      const vName = voiceInfo ? voiceInfo.name : '不明な話者';
+
+      return interaction.reply({
+        content: `💾 現在の設定をプリセット **${presetName}** として保存したのだ！\n・話者: ${vName}\n・速度: ${speed}\n・ピッチ: ${pitch}\n・音量: ${volume}`,
+        flags: [MessageFlags.Ephemeral]
+      });
+    }
+
+    if (sub === 'load') {
+      const presetName = interaction.options.getString('name');
+      const preset = cfg.userPresets[userId][presetName];
+
+      if (!preset) {
+        return interaction.reply({
+          content: `❌ **${presetName}** というプリセットは見つからないのだ。`,
+          flags: [MessageFlags.Ephemeral]
+        });
+      }
+
+      if (!cfg.userVoices) cfg.userVoices = {};
+      if (!cfg.userParams) cfg.userParams = {};
+
+      cfg.userVoices[userId] = preset.voiceId;
+      cfg.userParams[userId] = {
+        speed: preset.speed,
+        pitch: preset.pitch,
+        volume: preset.volume
+      };
+      setGuildConfig(guild.id, { userVoices: cfg.userVoices, userParams: cfg.userParams });
+
+      const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(preset.voiceId));
+      const vName = voiceInfo ? voiceInfo.name : '不明な話者';
+
+      return interaction.reply({
+        content: `🔄 プリセット **${presetName}** を読み込んだのだ！\n・話者: ${vName}\n・速度: ${preset.speed}\n・ピッチ: ${preset.pitch}\n・音量: ${preset.volume}`,
+        flags: [MessageFlags.Ephemeral]
+      });
+    }
+
+    if (sub === 'list') {
+      const presets = Object.entries(cfg.userPresets[userId]);
+      if (presets.length === 0) {
+        return interaction.reply({
+          content: `📌 あなたはまだプリセットを保存していないのだ。\n\`/preset save <名前>\` で保存できるのだ！`,
+          flags: [MessageFlags.Ephemeral]
+        });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor('#4318ff')
+        .setTitle('📌 あなたの保存済みプリセット');
+
+      presets.forEach(([name, p]) => {
+        const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(p.voiceId));
+        const vName = voiceInfo ? voiceInfo.name : '不明な話者';
+        embed.addFields({
+          name: `🔖 ${name}`,
+          value: `・話者: ${vName}\n・速度: ${p.speed} | ピッチ: ${p.pitch} | 音量: ${p.volume}`,
+          inline: false
+        });
+      });
+
+      return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+    }
   }
 
   // ── /setchannel ──────────────────────────────────────────────
@@ -1003,12 +1111,13 @@ export async function handleCommand(interaction) {
       let artist = q.current.artist;
       let cleanTitle = q.current.title;
 
+      let partA = null;
+      let partB = null;
+
       // 2. Refined cleaning logic for fallback
-      // Extract from Japanese quotes if present (standard for song names in JP titles)
       const quoteMatch = cleanTitle.match(/[「『](.+?)[」』]/);
       if (quoteMatch && quoteMatch[1]) {
         track = track || quoteMatch[1];
-        // If we found a track in quotes, the rest of the title might contain the artist
         if (!artist) {
           const splitParts = cleanTitle.split(/[「『」』]/);
           const potentialArtist = splitParts[0].trim() || splitParts[2]?.trim();
@@ -1016,31 +1125,29 @@ export async function handleCommand(interaction) {
         }
       }
 
-      // If still missing metadata, perform aggressive cleaning on the raw title
-      if (!track) {
-        let tempTrack = cleanTitle
-          .replace(/\[.*?\]|\(.*?\)|【.*?】/g, ' ') // Strip tags [MV], (Official)
-          .replace(/Music Video|Official\s*(Video|Audio|Music Video)?|MV|ft\.|feat\.|Lyric Video/gi, ' ')
-          .replace(/歌ってみた|を歌ってみた|cover(ed by| by)?|弾いてみた|叩いてみた|off vocal|instrumental|inst|Remix/gi, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
+      let tempTrack = cleanTitle
+        .replace(/\[.*?\]|\(.*?\)|【.*?】/g, ' ')
+        .replace(/Music Video|Official\s*(Video|Audio|Music Video)?|MV|ft\.|feat\.|Lyric Video/gi, ' ')
+        .replace(/歌ってみた|を歌ってみた|cover(ed by| by)?|弾いてみた|叩いてみた|off vocal|instrumental|inst|Remix/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
 
-        // Handle common delimiters (Artist - Title or Title / Artist)
+      if (!track && !artist) {
         const delimiters = [/\s*-\s*/, /\s*—\s*/, /\s*\/\s*/, /\s*／\s*/, /\s*\|\s*/, /\s*｜\s*/, /\s*:\s*/];
-        let foundDelim = false;
         for (const delim of delimiters) {
           if (tempTrack.match(delim)) {
             const parts = tempTrack.split(delim).filter(p => p.trim().length > 0);
             if (parts.length >= 2) {
-              // We assign both to try searching later, but for now we'll just treat them as keywords
-              track = parts[1].trim();
-              if (!artist) artist = parts[0].trim();
-              foundDelim = true;
+              partA = parts[0].trim();
+              partB = parts[1].trim();
+              break; 
             }
-            break; 
           }
         }
-        if (!foundDelim) track = tempTrack;
+      }
+
+      if (!track && !partA) {
+        track = tempTrack;
       }
 
       let lyrics = null;
@@ -1138,28 +1245,44 @@ export async function handleCommand(interaction) {
       // 4. Step 2: LRCLIB Fallback (Multi-step Search)
       if (!lyrics) {
         source = 'LRCLIB';
-        const searchLrclib = async (query, targetTrack, targetArtist) => {
+        
+        const looseMatch = (str1, str2) => {
+          if (!str1 || !str2) return false;
+          const s1 = str1.replace(/\(.*?\)|\[.*?\]/g, '').trim().toLowerCase();
+          const s2 = str2.replace(/\(.*?\)|\[.*?\]/g, '').trim().toLowerCase();
+          return s1 === s2 || s1.includes(s2) || s2.includes(s1);
+        };
+
+        const searchLrclib = async (query, tA, tB, exactTrack, exactArtist) => {
+          if (!query) return null;
           try {
             const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`);
             const data = await res.json();
+            
             if (data && data.length > 0) {
-              const tLower = targetTrack?.toLowerCase();
-              const aLower = targetArtist?.toLowerCase();
-
               for (let i = 0; i < Math.min(data.length, 5); i++) {
-                const resName = data[i].name.toLowerCase();
-                const resArtist = data[i].artistName.toLowerCase();
-                
-                const isNameMatch = tLower && (resName === tLower || resName.includes(tLower));
-                const isArtistMatch = aLower && (resArtist.includes(aLower) || resName.includes(aLower));
+                const resName = data[i].name;
+                const resArtist = data[i].artistName;
+                let isMatch = false;
 
-                if (isNameMatch && (data[i].plainLyrics || data[i].syncedLyrics)) {
-                  if (!aLower || isArtistMatch) {
-                    return data[i].plainLyrics || data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
-                  }
+                if (exactTrack || exactArtist) {
+                   const trackMatch = exactTrack ? looseMatch(resName, exactTrack) : true;
+                   const artistMatch = exactArtist ? looseMatch(resArtist, exactArtist) || looseMatch(resName, exactArtist) : true;
+                   isMatch = (trackMatch && artistMatch);
+                } else if (tA && tB) {
+                   const matchOrder1 = looseMatch(resName, tA) && looseMatch(resArtist, tB);
+                   const matchOrder2 = looseMatch(resName, tB) && looseMatch(resArtist, tA);
+                   isMatch = (matchOrder1 || matchOrder2);
+                } else {
+                   isMatch = looseMatch(resName, query); 
+                }
+
+                if (isMatch && (data[i].plainLyrics || data[i].syncedLyrics)) {
+                  return data[i].plainLyrics || data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
                 }
               }
 
+              // Fallback: If no strict match and we're desperate, just return the first hit if it has lyrics
               for (let i = 0; i < Math.min(data.length, 5); i++) {
                 if (data[i].plainLyrics) return data[i].plainLyrics;
                 if (data[i].syncedLyrics) return data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
@@ -1171,9 +1294,21 @@ export async function handleCommand(interaction) {
           return null;
         };
 
-        lyrics = await searchLrclib(artist ? `${artist} ${track}` : track, track, artist);
-        if (!lyrics && artist && track) lyrics = await searchLrclib(track, track, artist);
-        if (!lyrics) lyrics = await searchLrclib(cleanTitle, track, artist);
+        const queries = [];
+        if (artist && track) queries.push({ q: `${artist} ${track}`, t: track, a: artist });
+        if (partA && partB) {
+          queries.push({ q: `${partA} ${partB}`, pA: partA, pB: partB });
+          queries.push({ q: `${partB} ${partA}`, pA: partA, pB: partB });
+        }
+        if (artist && track) queries.push({ q: track, t: track, a: artist });
+        if (partA) queries.push({ q: partA, pA: partA });
+        if (partB) queries.push({ q: partB, pA: partB });
+        queries.push({ q: tempTrack || cleanTitle });
+
+        for (const qObj of queries) {
+          lyrics = await searchLrclib(qObj.q, qObj.pA, qObj.pB, qObj.t, qObj.a);
+          if (lyrics) break;
+        }
       }
 
       if (!lyrics) {

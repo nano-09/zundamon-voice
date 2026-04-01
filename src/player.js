@@ -12,6 +12,7 @@ import {
   EndBehaviorType,
   StreamType,
 } from '@discordjs/voice';
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { synthesize } from './tts.js';
 import { getGuildConfig, setGuildConfig, updateGuildMeta, getFullGuildConfig } from './config.js';
 import { logToSupabase } from './db_supabase.js';
@@ -23,7 +24,12 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
 
-// Map of guildId -> { connection, musicPlayer, ttsPlayer, queue, ttsQueue, playing, aiGenerating, currentSong }
+let discordClient = null;
+export function setDiscordClient(client) {
+  discordClient = client;
+}
+
+// Map of guildId -> { connection, musicPlayer, ttsPlayer, queue, ttsQueue, playing, aiGenerating, currentSong, ... }
 const guilds = new Map();
 
 function getGuildState(guildId) {
@@ -40,6 +46,8 @@ function getGuildState(guildId) {
       currentSong: null,
       currentProcess: null,
       loopMode: 'off', // 'off', 'track', 'queue'
+      nowPlayingMessage: null,
+      nowPlayingInterval: null,
     });
   }
   return guilds.get(guildId);
@@ -145,6 +153,8 @@ export async function joinChannel(voiceChannel, retryCount = 0) {
         state.queue.push(finishedSong); // add to end of queue
       }
     }
+    
+    clearNowPlaying(voiceChannel.guild.id);
 
     // Auto-exit karaoke mode if queue is empty
     checkAutoExitKaraoke(voiceChannel.guild.id);
@@ -162,6 +172,7 @@ export async function joinChannel(voiceChannel, retryCount = 0) {
     state.playing = false;
     state.currentSong = null;
 
+    clearNowPlaying(voiceChannel.guild.id);
     checkAutoExitKaraoke(voiceChannel.guild.id);
     processQueue(voiceChannel.guild.id);
   });
@@ -227,6 +238,7 @@ export function leaveChannel(guildId) {
       updateGuildMeta(guildId, { status: '待機中' });
     }
   }
+  clearNowPlaying(guildId);
   // Clear conversation history so the bot doesn't respond to old context
   clearHistory(guildId).catch(() => { });
   console.log(`[Player] Left channel and cleared history for guild ${guildId}`);
@@ -244,6 +256,7 @@ export function leaveAllChannels() {
     if (state.connection) {
       state.connection.destroy();
     }
+    clearNowPlaying(guildId);
   }
   guilds.clear();
   // Clear all conversation history on full shutdown
@@ -441,6 +454,8 @@ export function skipMusic(guildId) {
       }
     }
 
+    clearNowPlaying(guildId);
+
     // 4. Force stop the player (clears current resource)
     // This will trigger the Idle event if the player was playing/buffering,
     // which then calls processQueue() for the next song.
@@ -575,8 +590,10 @@ async function processQueue(guildId) {
         }
       });
 
+      let accumulatedErr = '';
       ytdlp.stderr.on('data', data => {
         const msg = data.toString().trim();
+        accumulatedErr += data.toString();
         // Ignore the JS runtime warning since we are now providing it or just to keep logs clean
         if (msg && !msg.includes('JavaScript runtime')) {
           console.error(`[G:${guildId}] [yt-dlp] Error:`, msg);
@@ -591,8 +608,32 @@ async function processQueue(guildId) {
       ffmpeg.on('error', err => console.error(`[G:${guildId}] [ffmpeg] Spawn error:`, err.message));
 
       ytdlp.on('close', (code, signal) => {
-        if (signal === 'SIGTERM') console.log(`[G:${guildId}] [yt-dlp] Process terminated.`);
-        else if (code && code !== 0) console.warn(`[G:${guildId}] [yt-dlp] Exited with code ${code}`);
+        if (signal === 'SIGTERM') {
+          console.log(`[G:${guildId}] [yt-dlp] Process terminated.`);
+        } else if (code && code !== 0) {
+          console.warn(`[G:${guildId}] [yt-dlp] Exited with code ${code}`);
+          const isRestricted = accumulatedErr.includes('Sign in to confirm your age');
+          const isPrivate = accumulatedErr.includes('Private video');
+          const isUnavailable = accumulatedErr.includes('Video unavailable');
+          
+          if ((isRestricted || isPrivate || isUnavailable) && discordClient) {
+             const cfg = getGuildConfig(guildId);
+             if (cfg.textChannelId) {
+                const channel = discordClient.channels.cache.get(cfg.textChannelId);
+                if (channel) {
+                   let reason = '利用できません';
+                   if (isRestricted) reason = '年齢制限がかかっています';
+                   if (isPrivate) reason = '非公開動画です';
+                   
+                   const errEmbed = new EmbedBuilder()
+                     .setColor('#E57373')
+                     .setTitle('⚠️ 再生エラー')
+                     .setDescription(`**${item.title}** は${reason}ため再生できないのだ。スキップするのだ！`);
+                   channel.send({ embeds: [errEmbed] }).catch(()=>null);
+                }
+             }
+          }
+        }
       });
 
       state.currentProcess = {
@@ -609,6 +650,8 @@ async function processQueue(guildId) {
       console.log(`[Player] Music resource created. StreamType: OggOpus, InlineVolume: false`);
 
       state.musicPlayer.play(resource);
+      
+      sendNowPlayingEmbed(guildId, item, resource);
     }
   } catch (err) {
     console.error('[Player] Music playback error:', err.message || err);
@@ -668,3 +711,104 @@ async function processTtsQueue(guildId) {
     processTtsQueue(guildId);
   }
 }
+
+function formatDuration(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const m = Math.floor(seconds / 60);
+  const s = String(seconds % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+async function sendNowPlayingEmbed(guildId, song, resource) {
+  const state = guilds.get(guildId);
+  if (!state || !discordClient) return;
+
+  const cfg = getGuildConfig(guildId);
+  if (!cfg.textChannelId) return;
+
+  const channel = discordClient.channels.cache.get(cfg.textChannelId);
+  if (!channel) return;
+
+  clearNowPlaying(guildId);
+
+  const embed = new EmbedBuilder()
+    .setColor('#42A5F5')
+    .setTitle('🎶 再生中')
+    .setDescription(`**[${song.title}](${song.url})**\n⏰ \`0:00 / ${song.duration}\``);
+
+  if (song.artist) embed.addFields({ name: '🎤 アーティスト', value: song.artist, inline: true });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('music_pause')
+      .setLabel('⏯️ 再生/一時停止')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('music_skip')
+      .setLabel('⏭️ スキップ')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('music_stop')
+      .setLabel('⏹️ 停止')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  try {
+    const msg = await channel.send({ embeds: [embed], components: [row] });
+    state.nowPlayingMessage = msg;
+
+    state.nowPlayingInterval = setInterval(() => {
+      if (!state.nowPlayingMessage) {
+        clearInterval(state.nowPlayingInterval);
+        return;
+      }
+      
+      const currentStatus = state.musicPlayer?.state.status;
+      if (currentStatus === AudioPlayerStatus.Paused) {
+        return;
+      }
+
+      const elapsed = formatDuration(resource.playbackDuration);
+      const newEmbed = EmbedBuilder.from(embed).setDescription(`**[${song.title}](${song.url})**\n⏰ \`${elapsed} / ${song.duration}\``);
+      
+      msg.edit({ embeds: [newEmbed] }).catch(() => {
+        clearInterval(state.nowPlayingInterval);
+      });
+    }, 10000);
+  } catch (err) {
+    console.warn(`[G:${guildId}] [NowPlaying] Failed to send embed:`, err.message);
+  }
+}
+
+function clearNowPlaying(guildId) {
+  const state = guilds.get(guildId);
+  if (!state) return;
+
+  if (state.nowPlayingInterval) {
+    clearInterval(state.nowPlayingInterval);
+    state.nowPlayingInterval = null;
+  }
+
+  if (state.nowPlayingMessage) {
+    // Disable components instead of deleting message to keep history
+    const oldEmbeds = state.nowPlayingMessage.embeds;
+    if (oldEmbeds && oldEmbeds.length > 0 && state.nowPlayingMessage.editable) {
+      const disabledRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('music_pause').setLabel('⏯️ 再生/一時停止').setStyle(ButtonStyle.Primary).setDisabled(true),
+        new ButtonBuilder().setCustomId('music_skip').setLabel('⏭️ スキップ').setStyle(ButtonStyle.Secondary).setDisabled(true),
+        new ButtonBuilder().setCustomId('music_stop').setLabel('⏹️ 停止').setStyle(ButtonStyle.Danger).setDisabled(true)
+      );
+      state.nowPlayingMessage.edit({ embeds: oldEmbeds, components: [disabledRow] }).catch(() => null);
+    }
+    state.nowPlayingMessage = null;
+  }
+}
+
+export function stopMusic(guildId) {
+  const state = getGuildState(guildId);
+  if (!state) return false;
+  state.queue = [];
+  state.loopMode = 'off';
+  return skipMusic(guildId);
+}
+

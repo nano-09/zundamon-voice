@@ -4,7 +4,7 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Events, REST, Routes, MessageFlags, Partials } from 'discord.js';
 import { commandDefinitions, handleCommand, startCleanChatTimer } from './commands.js';
-import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel, isConnected as isBotConnected } from './player.js';
+import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel, isConnected as isBotConnected, setDiscordClient, pauseMusic, skipMusic, stopMusic } from './player.js';
 import { initBotConfig, getBotConfig } from './botConfig.js';
 import { getGuildConfig, setGuildConfig, initConfigs, getFullGuildConfig, refreshConfig } from './config.js';
 import { initMcpClient, isMcpReady } from './mcpClient.js';
@@ -107,6 +107,7 @@ configPromise.then(() => {
 // ── Ready ─────────────────────────────────────────────────────────────────────
 client.once(Events.ClientReady, async (c) => {
   console.log(`[SYS] [INFO] Ready event fired! Bot user: ${c.user.tag}`);
+  setDiscordClient(client);
 
   // ── 1. IMMEDIATE HEARTBEAT & STATS LOOP ────────────────────────────────────
   // We start this immediately so the dashboard sees us as "Online" right away.
@@ -322,6 +323,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } else {
       await interaction.reply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
     }
+  }
+  
+  if (interaction.isButton()) {
+    try {
+      const guildId = interaction.guildId;
+      if (!guildId) return;
+
+      if (interaction.customId === 'music_pause') {
+        const paused = pauseMusic(guildId);
+        if (paused === null) {
+          await interaction.reply({ content: '現在再生中の音楽はないのだ！', flags: [MessageFlags.Ephemeral] });
+        } else {
+          await interaction.reply({ content: `✅ 音楽を${paused ? '一時停止' : '再開'}したのだ！`, flags: [MessageFlags.Ephemeral] });
+        }
+      } else if (interaction.customId === 'music_skip') {
+         const skipped = skipMusic(guildId);
+         if (skipped) {
+            await interaction.reply({ content: '⏩ 曲をスキップしたのだ！', flags: [MessageFlags.Ephemeral] });
+         } else {
+            await interaction.reply({ content: 'スキップする曲がないのだ。', flags: [MessageFlags.Ephemeral] });
+         }
+      } else if (interaction.customId === 'music_stop') {
+         const stopped = stopMusic(guildId);
+         if (stopped) {
+            await interaction.reply({ content: '⏹️ 音楽を停止し、キューをクリアしたのだ！', flags: [MessageFlags.Ephemeral] });
+         } else {
+            await interaction.reply({ content: '停止する音楽がないのだ。', flags: [MessageFlags.Ephemeral] });
+         }
+      }
+    } catch (err) {
+      console.error('[ButtonInteraction]', err);
+      await interaction.reply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
+    }
+    return;
   }
 });
 
