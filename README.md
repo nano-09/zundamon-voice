@@ -99,37 +99,18 @@ cp .env.example .env
 
 ```env
 # ── Required ─────────────────────────────────────
-DISCORD_TOKEN=あなたのBotトークン
-CLIENT_ID=あなたのアプリケーションID
 
-# Bot Owner Discord User ID (for 2FA server authorization DMs)
-OWNER_DISCORD_ID=あなたのDiscordユーザーID
-
-# Bot Owner Email (for 2FA OTP)
-OWNER_EMAIL=あなたのメールアドレス
-
-# ── Email Settings (Required for bot to send 2FA codes) ──
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
-SMTP_USER=あなたのメールアドレス
-SMTP_PASS=アプリパスワード
-
-# ── Ollama (Required for AI Chat Mode) ───────────
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b
-
-# ── VOICEVOX (Required for TTS) ──────────────────
-VOICEVOX_URL=http://localhost:50021
-# Speaker IDs: 3=ノーマル, 1=あまあま, 5=セクシー, 7=ツンツン
-VOICEVOX_SPEAKER=3
-
-# ── Supabase (Required for conversation memory) ──
-SUPABASE_URL=あなたのSupabase URL
-SUPABASE_KEY=あなたのSupabase Key
+# ── Supabase (Required for Database/2FA) ─────────
+# Get this from your Supabase Project Settings > API
+SUPABASE_URL=your_supabase_url_here
+SUPABASE_KEY=your_supabase_anon_or_service_key_here
 ```
 
+> 💡 **その他の環境変数について:**
+> `DISCORD_TOKEN` や `CLIENT_ID` などの各種設定値は、セキュリティ上の理由から **Supabase Vault**（Vault Secrets）に保存する仕組みになっています。もし Vault を使用しない場合は、上記の `.env` ファイルに直接キーと値（例: `DISCORD_TOKEN=...`）を追記することでフォールバック（代用）として動作します。
+> 
 > 🔒 **サーバー追加時の2FA認証について**:
-> `OWNER_DISCORD_ID` を設定しておくと、Botが新しいサーバーに参加した際にオーナーのDM宛に認証リンクが送付されます。リンクから承認することでそのサーバーでの利用が許可されます。
+> Vault または `.env` 内で `OWNER_DISCORD_ID` を設定しておくと、Botが新しいサーバーに参加した際にオーナーのDM宛に認証リンクが送付されます。リンクから承認することでそのサーバーでの利用が許可されます。
 
 ---
 
