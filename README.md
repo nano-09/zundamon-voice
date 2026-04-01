@@ -125,7 +125,7 @@ VOICEVOX_SPEAKER=3
 
 # ── Supabase (Required for conversation memory) ──
 SUPABASE_URL=あなたのSupabase URL
-SUPABASE_KEY=あなたのSupabase Key
+SUPABASE_KEY=あなたのSupabase service_role Key (※anonキーだとRLSエラーになります)
 ```
 
 > 🔒 **サーバー追加時の2FA認証について**:

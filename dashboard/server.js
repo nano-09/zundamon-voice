@@ -473,7 +473,11 @@ io.on('connection', (socket) => {
   socket.on('kill_all', () => {
     io.emit('system_shutdown');
     io.emit('action_response', { action: 'kill_all', status: 'pending', message: '⏻ エコシステムを終了中...' });
-    spawn('cmd.exe', ['/c', 'ShutdownZundamon.bat'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
+    if (process.platform === 'win32') {
+      spawn('cmd.exe', ['/c', 'ShutdownZundamon.bat'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('sh', ['stop-macOS.command'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
+    }
     setTimeout(() => process.exit(0), 1500);
   });
   // Legacy alias

@@ -156,6 +156,18 @@ client.once(Events.ClientReady, async (c) => {
       await initConfigs(guildIds);
       console.log(`[SYS] [INFO] Config initialization complete.`);
 
+      // Ensure all currently connected guilds have a database row before proceeding
+      const { getAllGuildConfigsFromDb } = await import('./db_supabase.js');
+      const allConfigs = await getAllGuildConfigsFromDb(guildIds);
+      const existingGuildIds = new Set(allConfigs.map(c => c.guild_id));
+
+      for (const guild of client.guilds.cache.values()) {
+        if (!existingGuildIds.has(guild.id)) {
+          console.log(`[SYS] Guild not found in DB at startup, initializing: ${guild.name} (${guild.id})`);
+          await initGuildTable(guild).catch(e => console.error('[Supabase] Failed to init phantom guild:', e));
+        }
+      }
+
       // Resume clean chat intervals
       for (const guildId of guildIds) {
         const cfg = getGuildConfig(guildId);
