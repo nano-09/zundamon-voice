@@ -10,9 +10,18 @@ import { incrementCounter } from './stats.js';
 import { getBotConfig } from './botConfig.js';
 import { Ollama } from 'ollama';
 
-const OLLAMA_MODEL = getBotConfig('OLLAMA_MODEL', 'qwen2.5:7b');
-const OLLAMA_URL = getBotConfig('OLLAMA_URL', 'http://localhost:11434');
-const ollama = new Ollama({ host: OLLAMA_URL });
+function getOllamaModel() {
+  return getBotConfig('OLLAMA_MODEL', process.env.OLLAMA_MODEL || 'qwen2.5:7b');
+}
+
+function getOllamaUrl() {
+  return getBotConfig('OLLAMA_URL', process.env.OLLAMA_URL || 'http://localhost:11434');
+}
+
+function getOllamaClient() {
+  return new Ollama({ host: getOllamaUrl() });
+}
+
 const activeGuildControllers = new Map();
 
 export function cancelAiGeneration(guildId) {
@@ -52,16 +61,18 @@ export async function searchWeb(guildId, query, userId = null, maxResults = 5) {
     const jsonString = result.content[0].text;
     let items;
     try {
-      items = JSON.parse(jsonString);
+      const parsed = JSON.parse(jsonString);
+      // open-websearch returns { results: [...] } — check named keys first
+      if (parsed && Array.isArray(parsed.results)) items = parsed.results;
+      else if (parsed && Array.isArray(parsed.data)) items = parsed.data;
+      else if (Array.isArray(parsed)) items = parsed;
+      else {
+        console.error(`[Search] Unexpected MCP response structure:`, JSON.stringify(parsed).slice(0, 200));
+        return { text: '', urls: [] };
+      }
     } catch (e) {
       console.error(`[Search] Failed to parse MCP response as JSON.`);
       return { text: '', urls: [] };
-    }
-
-    if (!Array.isArray(items)) {
-      if (items && Array.isArray(items.results)) items = items.results;
-      else if (items && Array.isArray(items.data)) items = items.data;
-      else return { text: '', urls: [] };
     }
 
     const compiledResults = [];
@@ -98,8 +109,8 @@ export async function correctProperNouns(guildId, text, userId = null) {
     console.log(`[G:${guildId}] [SYS] Correcting punctuation/nouns (LLM) - Input: "${text}"${userId ? ` (User: ${userId})` : ''}`);
     logToSupabase(guildId, 'sys', `Correcting text (LLM)${userId ? ` (User: ${userId})` : ''}`);
 
-    const response = await ollama.chat({
-      model: OLLAMA_MODEL,
+    const response = await getOllamaClient().chat({
+      model: getOllamaModel(),
       messages: [
         {
           role: 'system',
@@ -118,6 +129,7 @@ export async function correctProperNouns(guildId, text, userId = null) {
     if (!corrected || corrected.length < text.length * 0.3 || corrected.length > text.length * 3) return text;
     return corrected;
   } catch (err) {
+    console.error(`[AI] Error in correctProperNouns:`, err.message);
     return text;
   }
 }
@@ -137,19 +149,21 @@ export async function generateSearchQuery(guildId, text, history) {
 
     const prompt = `直近の会話履歴と最新の発言から、最適な検索キーワードのみを出力してください。\n\n【履歴】\n${historyText}\n\n【最新】\n${text}\n\n【回答】`;
 
-    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+    const response = await fetch(`${getOllamaUrl()}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: prompt, stream: false, options: { temperature: 0.1 } })
+      body: JSON.stringify({ model: getOllamaModel(), prompt: prompt, stream: false, options: { temperature: 0.1 } })
     });
 
     if (response.ok) {
       const data = await response.json();
       let query = data.response?.trim();
-      query = query.replace(/[。、！\?\?？]|(をおしえて|について|の最新)|です|ます/g, '').trim();
+      query = query.replace(/[。、！\\?\\?？]|(をおしえて|について|の最新)|です|ます/g, '').trim();
       if (query) return query;
     }
-  } catch (err) {}
+  } catch (err) {
+    console.error(`[AI] Error in generateSearchQuery:`, err.message);
+  }
   return text;
 }
 
@@ -173,8 +187,7 @@ export async function processSearchCommand(guildId, userId, text) {
   try {
     const correctedText = await correctProperNouns(guildId, text, userId).catch(() => text);
     const history = await getRecentHistory(guildId, 6);
-    let searchQuery = await generateSearchQuery(guildId, correctedText, history).catch(() => correctedText);
-    searchQuery += ' reddit twitter youtube';
+    const searchQuery = await generateSearchQuery(guildId, correctedText, history).catch(() => correctedText);
 
     const searchResults = await searchWeb(guildId, searchQuery, userId);
     const searchContext = searchResults.text ? `\n\n【ウェブ検索結果】\n${searchResults.text}` : '';
@@ -203,11 +216,11 @@ export async function processSearchCommand(guildId, userId, text) {
     activeGuildControllers.set(guildId, controller);
 
     try {
-      const response = await fetch(`${OLLAMA_URL}/api/chat`, {
+      const response = await fetch(`${getOllamaUrl()}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
-        body: JSON.stringify({ model: OLLAMA_MODEL, messages, stream: false, options: { temperature: 0.4 } })
+        body: JSON.stringify({ model: getOllamaModel(), messages, stream: false, options: { temperature: 0.4 } })
       });
       if (!response.ok) throw new Error('Ollama error');
       const data = await response.json();
@@ -219,6 +232,7 @@ export async function processSearchCommand(guildId, userId, text) {
       activeGuildControllers.delete(guildId);
     }
   } catch (err) {
+    console.error(`[AI] Error in processSearchCommand:`, err.message);
     return { reply: 'ごめんなのだ、うまく検索できなかったのだ。', urls: [] };
   }
 }

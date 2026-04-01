@@ -97,6 +97,8 @@ export async function callMcpTool(name, args) {
     return result;
   } catch (err) {
     console.error(`[MCP] Failed to call tool ${name}:`, err);
+    // Reset the stale client so the next call forces a fresh connection
+    mcpClient = null;
     return null;
   }
 }

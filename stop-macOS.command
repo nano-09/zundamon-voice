@@ -25,7 +25,18 @@ echo "[3/4] Closing Node.js processes..."
 pkill -f "dashboard/server.js" > /dev/null 2>&1
 pkill -f "src/index.js" > /dev/null 2>&1
 
-echo "[4/4] Finalizing teardown..."
+echo "[4/4] Ensuring ports are released..."
+# Wait up to 5 seconds for port 3000 to clear
+for i in {1..5}; do
+    if lsof -i :3000 > /dev/null 2>&1; then
+        echo "      (Waiting for port 3000 to release... $i/5)"
+        sleep 1
+    else
+        break
+    fi
+done
+
+echo "Finalizing teardown..."
 
 echo ""
 echo "---------------------------------------------------"

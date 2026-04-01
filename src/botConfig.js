@@ -32,15 +32,16 @@ export async function initBotConfig() {
   
   const promises = CONFIG_KEYS.map(async (key) => {
     try {
+      // process.env takes precedence over Vault for local config overrides
+      const fallback = process.env[key];
+      if (fallback) {
+        configCache.set(key, fallback);
+        return;
+      }
+
       const { data, error } = await supabase.rpc('get_bot_secret', { secret_name: key });
       
       if (error) {
-        // Fallback to process.env if vault retrieval fails (useful for local dev or transition)
-        const fallback = process.env[key];
-        if (fallback) {
-          configCache.set(key, fallback);
-          return;
-        }
         console.warn(`[BotConfig] Failed to fetch secret "${key}":`, error.message);
         return;
       }
@@ -48,13 +49,7 @@ export async function initBotConfig() {
       if (data !== null) {
         configCache.set(key, data);
       } else {
-        // Fallback to process.env
-        const fallback = process.env[key];
-        if (fallback) {
-          configCache.set(key, fallback);
-        } else {
-          console.warn(`[BotConfig] Secret "${key}" not found in Vault and no .env fallback.`);
-        }
+        console.warn(`[BotConfig] Secret "${key}" not found in Vault and no .env fallback.`);
       }
     } catch (err) {
       console.error(`[BotConfig] Error fetching secret "${key}":`, err.message);

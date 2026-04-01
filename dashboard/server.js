@@ -443,16 +443,20 @@ function startBot() {
 }
 
 function stopBot() {
-  if (botProcess) {
-    isBotStopping = true;
+  if (!botProcess) {
+    // Nothing to stop — make sure flags are clean so startBot() isn't blocked.
+    isBotStopping = false;
     pendingStart = false;
-    const p = botProcess;
-    try { p.stdin.write('SHUTDOWN\n'); } catch(e) {}
-    setTimeout(() => { 
-      // Hard kill the specific process instance if it's still somehow alive
-      try { p.kill('SIGKILL'); } catch(e) {} 
-    }, 3000);
+    return;
   }
+  isBotStopping = true;
+  pendingStart = false;
+  const p = botProcess;
+  try { p.stdin.write('SHUTDOWN\n'); } catch(e) {}
+  setTimeout(() => { 
+    // Hard kill the specific process instance if it's still somehow alive
+    try { p.kill('SIGKILL'); } catch(e) {} 
+  }, 3000);
 }
 
 // ═══ SOCKET ═══
@@ -490,12 +494,18 @@ io.on('connection', (socket) => {
   socket.on('kill_all', () => {
     io.emit('system_shutdown');
     io.emit('action_response', { action: 'kill_all', status: 'pending', message: '⏻ エコシステムを終了中...' });
+    // Stop the bot process first so IPC is cleanly shut down
+    stopBot();
     if (process.platform === 'win32') {
       spawn('cmd.exe', ['/c', 'ShutdownZundamon.bat'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
     } else {
+      // Let the shell script kill the dashboard process externally so the OS
+      // fully releases port 3000 before start-macOS.command checks it.
       spawn('sh', ['stop-macOS.command'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
     }
-    setTimeout(() => process.exit(0), 1500);
+    // Give the socket a moment to deliver the system_shutdown event, then exit.
+    // The stop script will also kill us via pkill, whichever comes first is fine.
+    setTimeout(() => process.exit(0), 2000);
   });
   // Legacy alias
   socket.on('shutdown_all', () => socket.emit('kill_all'));
