@@ -11,6 +11,7 @@ import {
   entersState,
   EndBehaviorType,
   StreamType,
+  NoSubscriberBehavior,
 } from '@discordjs/voice';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { synthesize } from './tts.js';
@@ -129,8 +130,12 @@ export async function joinChannel(voiceChannel, retryCount = 0) {
     throw new Error(`ボイスチャンネルへの接続が失敗したのだ。 (Reason: ${err.message})`);
   }
 
-  const musicPlayer = createAudioPlayer();
-  const ttsPlayer = createAudioPlayer();
+  const musicPlayer = createAudioPlayer({
+    behaviors: { noSubscriber: NoSubscriberBehavior.Play }
+  });
+  const ttsPlayer = createAudioPlayer({
+    behaviors: { noSubscriber: NoSubscriberBehavior.Play }
+  });
   
   // Initially subscribe to ttsPlayer (default for readMode)
   connection.subscribe(ttsPlayer);
@@ -575,11 +580,9 @@ async function processQueue(guildId) {
       const ffmpeg = spawn(ffmpegPath, [
         '-i', 'pipe:0',
         '-af', `volume=${kVolume}`,
-        '-c:a', 'libopus',
-        '-f', 'opus',
+        '-f', 's16le',
         '-ar', '48000',
         '-ac', '2',
-        '-b:a', '128k',
         'pipe:1'
       ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 
@@ -648,10 +651,10 @@ async function processQueue(guildId) {
       };
 
       const resource = createAudioResource(ffmpeg.stdout, {
-        inputType: StreamType.OggOpus,
-        inlineVolume: false // Disable to ensure FFmpeg-encoded Opus pass-through
+        inputType: StreamType.Raw,
+        inlineVolume: false 
       });
-      console.log(`[Player] Music resource created. StreamType: OggOpus, InlineVolume: false`);
+      console.log(`[Player] Music resource created. StreamType: Raw, InlineVolume: false`);
 
       state.musicPlayer.play(resource);
       
@@ -687,11 +690,7 @@ async function processTtsQueue(guildId) {
       '-f', 'wav',
       '-i', 'pipe:0',
       '-af', `volume=${ttsVolume}`,
-      '-c:a', 'libopus',
-      '-b:a', '128k',
-      '-application', 'voip',
-      '-packet_loss', '0',
-      '-f', 'opus',
+      '-f', 's16le',
       '-ar', '48000',
       '-ac', '2',
       'pipe:1'
@@ -707,7 +706,7 @@ async function processTtsQueue(guildId) {
     });
 
     const resource = createAudioResource(ffmpeg.stdout, {
-      inputType: StreamType.OggOpus,
+      inputType: StreamType.Raw,
       inlineVolume: false,
     });
     state.ttsPlayer.play(resource);
