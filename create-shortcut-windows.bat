@@ -13,6 +13,7 @@ echo Set oLink = oWS.CreateShortcut(sLinkFile) >> create_shortcut.vbs
 echo oLink.TargetPath = "%TARGET%" >> create_shortcut.vbs
 echo oLink.WorkingDirectory = "%SCRIPT_DIR%" >> create_shortcut.vbs
 echo oLink.Description = "Launch the Zundamon Bot" >> create_shortcut.vbs
+echo oLink.IconLocation = "%SCRIPT_DIR%zundamon-icon.ico, 0" >> create_shortcut.vbs
 echo oLink.Save >> create_shortcut.vbs
 
 REM Run the temporary VBS script

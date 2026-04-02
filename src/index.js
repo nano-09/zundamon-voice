@@ -11,6 +11,7 @@ import { initMcpClient, isMcpReady } from './mcpClient.js';
 import { isGuildAuthorized, isGuildBlocked, sendLocalOtp, verifyLocalOtp } from './auth.js';
 import { initGuildTable, snapshotGuildAnalytics, logToSupabase, deleteGuildConfigFromDb } from './db_supabase.js';
 import fs from 'fs';
+import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import emojiRegex from 'emoji-regex';
@@ -675,7 +676,20 @@ function shutdown() {
   console.log('\n🛑 終了シグナルを受信しました。すべてのボイスチャンネルから退出します...');
   leaveAllChannels();
   client.destroy();
-  process.exit(0);
+
+  console.log('[SYS] Shutting down Ollama and Voicevox...');
+  if (process.platform === 'win32') {
+    exec('taskkill /F /IM ollama.exe /T', () => {});
+    exec('taskkill /F /IM "ollama app.exe" /T', () => {});
+    exec('taskkill /F /IM VOICEVOX.exe /T', () => {});
+    exec('taskkill /F /IM run.exe /T', () => {});
+  } else {
+    exec('pkill -f ollama', () => {});
+    exec('pkill -f VOICEVOX', () => {});
+    exec('pkill -f run', () => {});
+  }
+
+  setTimeout(() => process.exit(0), 1000);
 }
 
 process.on('SIGINT', shutdown);
