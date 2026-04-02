@@ -11,8 +11,14 @@ let mcpClient = null;
 function getNpxCommand() {
   if (process.platform === 'win32') return 'npx.cmd';
   try {
-    // Try to find npx from the shell's actual PATH
-    const npxPath = execSync('which npx 2>/dev/null || echo ""', { shell: '/bin/zsh', env: { ...process.env, PATH: `${process.env.HOME}/.nvm/versions/node/$(ls ${process.env.HOME}/.nvm/versions/node 2>/dev/null | tail -1)/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` } }).toString().trim();
+    // Try to find npx from the shell's actual PATH, adding common locations to the search
+    const npxPath = execSync('which npx 2>/dev/null || echo ""', { 
+      shell: '/bin/zsh', 
+      env: { 
+        ...process.env, 
+        PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.HOME}/.nvm/versions/node/$(ls ${process.env.HOME}/.nvm/versions/node 2>/dev/null | tail -1)/bin:${process.env.PATH || ''}` 
+      } 
+    }).toString().trim();
     if (npxPath && npxPath !== '') return npxPath;
   } catch (_) {}
   // Fallback: common macOS node install paths
@@ -43,7 +49,13 @@ export async function initMcpClient() {
       // Ensure PATH includes common node binary locations
       PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
     },
-    stderr: 'ignore' // Stop it from flooding the dashboard console with its startup logs
+    stderr: 'pipe' // Capture error output for diagnostics
+  });
+
+  // Log any errors from the MCP server process
+  transport.stderr?.on('data', (data) => {
+    const msg = data.toString().trim();
+    if (msg) console.error(`[MCP] Server Error: ${msg}`);
   });
 
   const client = new Client(

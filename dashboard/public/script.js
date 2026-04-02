@@ -417,7 +417,8 @@ socket.on('stats_update', (data) => {
 
   // Web Search status
   if (data.websearchStatus !== undefined) {
-    setPip('pip-websearch', data.websearchStatus ? 'online' : 'warning');
+    const ws = data.websearchStatus;
+    setPip('pip-websearch', ws === 'online' ? 'online' : ws === 'connecting' ? 'warning' : 'error');
   }
 });
 

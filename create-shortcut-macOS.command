@@ -2,13 +2,16 @@
 
 # Move to the directory where this script is located
 cd "$(dirname "$0")"
-TARGET="$(pwd)/start-macOS.command"
+START_TARGET="$(pwd)/start-macOS.command"
+STOP_TARGET="$(pwd)/stop-macOS.command"
 
-# Use AppleScript to create a true macOS Alias on the Desktop
-osascript -e "tell application \"Finder\" to make alias file to POSIX file \"$TARGET\" at desktop with properties {name:\"Start Zundamon\"}" > /dev/null 2>&1
+# Use AppleScript to create true macOS Aliases on the Desktop
+osascript -e "tell application \"Finder\" to make alias file to POSIX file \"$START_TARGET\" at desktop with properties {name:\"Start Zundamon\"}" > /dev/null 2>&1
+osascript -e "tell application \"Finder\" to make alias file to POSIX file \"$STOP_TARGET\" at desktop with properties {name:\"Stop Zundamon\"}" > /dev/null 2>&1
 
 echo "========================================================"
-echo "Shortcut 'Start Zundamon' has been created on your Desktop!"
-echo "You can double-click it to start the bot anywhere."
+echo "Two shortcuts have been created on your Desktop:"
+echo "  ▶  'Start Zundamon' - double-click to launch the bot"
+echo "  ⏹  'Stop Zundamon'  - double-click to shut everything down"
 echo "========================================================"
 read -p "Press [Enter] to exit..."

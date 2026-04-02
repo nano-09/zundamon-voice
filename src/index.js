@@ -242,8 +242,14 @@ client.once(Events.ClientReady, async (c) => {
       }
 
       // Pre-initialize the MCP server so the first search isn't delayed by NPX starting
-      initMcpClient().catch(err => console.error('[MCP] Pre-initialization failed:', err));
+      console.log('[SYS] [INIT] Starting Web Search (MCP)...');
+      initMcpClient().then(() => {
+        console.log('[SYS] [INIT] Web Search (MCP) is ready.');
+      }).catch(err => {
+        console.error('[MCP] Pre-initialization failed:', err);
+      });
 
+      console.log('[SYS] [INIT] Discord Bot initialization complete.');
       console.log('[SYS] [INIT] Startup background tasks finalized.');
     } catch (err) {
       console.error('[SYS] [CRITICAL] Background initialization failed:', err);
@@ -316,27 +322,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
   
-  if (!interaction.isChatInputCommand()) return;
-  try {
-    await handleCommand(interaction);
-  } catch (err) {
-    console.error('[InteractionCreate]', err);
-    incrementCounter(interaction.guildId, 'errors', interaction.user.id);
-    
-    // Log failure to Command Log
-    const logMsg = `[CMD] User: ${interaction.user.username}, Command: /${interaction.commandName}, Status: Error (${err.message})`;
-    logToSupabase(interaction.guildId, 'cmd', logMsg);
-
-    emitLiveSnapshot(interaction.guildId, { errors: 1 });
-    broadcastStats();
-
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
-    } else {
-      await interaction.reply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
-    }
-  }
-  
   if (interaction.isButton()) {
     try {
       const guildId = interaction.guildId;
@@ -369,6 +354,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
     }
     return;
+  }
+
+  if (!interaction.isChatInputCommand()) return;
+  try {
+    await handleCommand(interaction);
+  } catch (err) {
+    console.error('[InteractionCreate]', err);
+    incrementCounter(interaction.guildId, 'errors', interaction.user.id);
+    
+    // Log failure to Command Log
+    const logMsg = `[CMD] User: ${interaction.user.username}, Command: /${interaction.commandName}, Status: Error (${err.message})`;
+    logToSupabase(interaction.guildId, 'cmd', logMsg);
+
+    emitLiveSnapshot(interaction.guildId, { errors: 1 });
+    broadcastStats();
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
+    } else {
+      await interaction.reply({ content: '❌ エラーが発生しました。', flags: [MessageFlags.Ephemeral] }).catch(() => { });
+    }
   }
 });
 
@@ -444,14 +450,23 @@ export const broadcastStats = () => {
 
   const wsStatus = client.ws.status;
   const wsPing   = Math.round(client.ws.ping);
-  const isOnline = client.isReady() && wsPing >= 0 && wsStatus === 0;
+  
+  // Refined botStatus with more descriptive connecting states
+  let botStatus = 'offline';
+  if (client.isReady() && wsStatus === 0 && wsPing >= 0) {
+    botStatus = 'online';
+  } else if (client.isReady()) {
+    botStatus = 'connecting'; // Technically ready but ping or wsStatus suggests transition
+  } else if (wsStatus === 1 || wsStatus === 2) {
+    botStatus = 'connecting';
+  }
 
   const stats = {
     type: 'HEARTBEAT',
-    status: isOnline ? 'online' : (wsStatus === 1 || wsStatus === 2 ? 'connecting' : 'offline'),
+    status: botStatus,
     guilds: client.guilds.cache.size,
     channels: client.channels.cache.size,
-    ping: Math.round(client.ws.ping),
+    ping: wsPing,
     uptime: client.uptime,
     websearchStatus: isMcpReady() ? 'online' : 'connecting',
     guildsDetail: guildsDetail,
@@ -668,6 +683,14 @@ process.on('SIGTERM', shutdown);
 
 // Listen for custom IPC shutdown from dashboard (for Windows graceful exit)
 process.stdin.setEncoding('utf8');
+
+// When the dashboard server dies, stdin gets EOF. Exit so we don't become
+// an orphan that blocks a clean re-launch.
+process.stdin.on('end', () => {
+  console.log('[SYS] Dashboard stdin closed (EOF). Shutting down bot...');
+  shutdown();
+});
+
 // ── Member/Role Cache for Dashboard ──────────────────────────────────────────
 const memberRoleCache = new Map(); // guildId -> { members, roles, timestamp }
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes

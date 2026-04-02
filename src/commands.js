@@ -14,7 +14,7 @@ import axios from 'axios';
 import ytExec from 'youtube-dl-exec';
 import ytSearch from 'yt-search';
 import supabase, { logToSupabase } from './db_supabase.js';
-import { incrementCommand } from './stats.js';
+import { incrementCommand, incrementCounter } from './stats.js';
 import { DEFAULT_PERMISSIONS } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1003,6 +1003,7 @@ export async function handleCommand(interaction) {
 
   // ── /play ──────────────────────────────────────────────────────
   if (commandName === 'play') {
+    const voiceChannel = member?.voice?.channel;
     if (!voiceChannel && !isConnected(guild.id)) {
       logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Failed (Not in VC)`);
       return interaction.reply({ content: '❌ まずボイスチャンネルに参加してほしいのだ！', flags: [MessageFlags.Ephemeral] });
@@ -1209,30 +1210,7 @@ export async function handleCommand(interaction) {
               }
             }
             
-            // Enhanced block detection fallback
-            if (!bestLyrics && desc.length > 300 && (desc.match(/\n/g) || []).length > 15) {
-                const lines = desc.split('\n');
-                let blocks = [];
-                let currentBlock = [];
-                
-                for (const line of lines) {
-                  const trimmed = line.trim();
-                  const isMeta = trimmed.includes('http') || trimmed.includes('@') || (/^[^:：\n]{2,20}[:：]/.test(trimmed) && trimmed.length < 100);
-                  
-                  if (isMeta || trimmed.length === 0) {
-                    if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
-                    currentBlock = [];
-                  } else {
-                    currentBlock.push(line);
-                  }
-                }
-                if (currentBlock.length > 0) blocks.push(currentBlock.join('\n'));
-                
-                if (blocks.length > 0) {
-                  bestLyrics = blocks.sort((a, b) => b.length - a.length)[0];
-                }
-            }
-            
+            // Removed enhanced block detection fallback because it incorrectly flagged long paragraphs of video credits (e.g. background chorus credits) as lyrics.
             if (bestLyrics && bestLyrics.length > 100) {
               lyrics = bestLyrics;
             }
@@ -1248,8 +1226,9 @@ export async function handleCommand(interaction) {
         
         const looseMatch = (str1, str2) => {
           if (!str1 || !str2) return false;
-          const s1 = str1.replace(/\(.*?\)|\[.*?\]/g, '').trim().toLowerCase();
-          const s2 = str2.replace(/\(.*?\)|\[.*?\]/g, '').trim().toLowerCase();
+          const s1 = str1.replace(/\(.*?\)|\[.*?\]|【.*?】|「.*?」|『.*?』/g, '').trim().toLowerCase();
+          const s2 = str2.replace(/\(.*?\)|\[.*?\]|【.*?】|「.*?」|『.*?』/g, '').trim().toLowerCase();
+          if (!s1 || !s2) return false;
           return s1 === s2 || s1.includes(s2) || s2.includes(s1);
         };
 
@@ -1280,12 +1259,6 @@ export async function handleCommand(interaction) {
                 if (isMatch && (data[i].plainLyrics || data[i].syncedLyrics)) {
                   return data[i].plainLyrics || data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
                 }
-              }
-
-              // Fallback: If no strict match and we're desperate, just return the first hit if it has lyrics
-              for (let i = 0; i < Math.min(data.length, 5); i++) {
-                if (data[i].plainLyrics) return data[i].plainLyrics;
-                if (data[i].syncedLyrics) return data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
               }
             }
           } catch (e) {

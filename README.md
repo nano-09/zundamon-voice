@@ -89,7 +89,91 @@ npm install
 
 ---
 
-### Step 3: 環境変数の設定
+### Step 3: Supabase (データベースとVault) のセットアップ
+
+このボットのデータ保存やアクセスログ、認証システムは Supabase を使用します。
+
+1. [Supabase](https://supabase.com) で新しいプロジェクトを作成します。
+2. ダッシュボードから **SQL Editor** を開き、以下のSQLスクリプトを貼り付けて実行してください。これにより必要なテーブル群、公開アップロード用バケット、そしてVaultから環境変数を取得するためのRPC(関数)が自動作成されます。
+
+<details>
+<summary>📋 必要なSQLスクリプト (クリックで展開)</summary>
+
+```sql
+-- 1. 必要な拡張機能を有効化
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "supabase_vault";
+
+-- 2. guild_configs テーブル (サーバーごとの設定・権限を保存)
+CREATE TABLE IF NOT EXISTS public.guild_configs (
+    guild_id TEXT PRIMARY KEY,
+    name TEXT,
+    icon_url TEXT,
+    owner_id TEXT,
+    member_count INTEGER,
+    permissions JSONB DEFAULT '{}'::jsonb,
+    settings JSONB DEFAULT '{}'::jsonb,
+    status TEXT DEFAULT '待機中',
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. guild_analytics テーブル (ダッシュボード用のアクティビティ履歴)
+CREATE TABLE IF NOT EXISTS public.guild_analytics (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    guild_id TEXT NOT NULL,
+    snapshot_at TIMESTAMPTZ NOT NULL,
+    texts_spoken INTEGER DEFAULT 0,
+    ai_queries INTEGER DEFAULT 0,
+    voice_minutes INTEGER DEFAULT 0,
+    errors INTEGER DEFAULT 0,
+    members_active INTEGER DEFAULT 0,
+    commands_used JSONB DEFAULT '{}'::jsonb
+);
+
+-- 4. logs_v2 テーブル (ダッシュボード用のログ)
+CREATE TABLE IF NOT EXISTS public.logs_v2 (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    guild_id TEXT,
+    type TEXT NOT NULL, -- 'bot', 'sys', または 'err'
+    message TEXT NOT NULL,
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. Vault RPC 関数 (ボットがVaultの機密情報を取得するため)
+CREATE OR REPLACE FUNCTION get_bot_secret(secret_name TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  secret_value TEXT;
+BEGIN
+  SELECT decrypted_secret INTO secret_value
+  FROM vault.decrypted_secrets
+  WHERE name = secret_name;
+  
+  RETURN secret_value;
+END;
+$$;
+
+-- 6. カスタムサウンドボード用ストレージバケット ('sounds')
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('sounds', 'sounds', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- パブリック読み取りとボットからの操作権限を設定
+CREATE POLICY "Public Read Access sounds" ON storage.objects FOR SELECT USING (bucket_id = 'sounds');
+CREATE POLICY "Bot Upload Access sounds" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'sounds');
+CREATE POLICY "Bot Delete Access sounds" ON storage.objects FOR DELETE USING (bucket_id = 'sounds');
+CREATE POLICY "Bot Update Access sounds" ON storage.objects FOR UPDATE USING (bucket_id = 'sounds');
+```
+
+</details>
+
+---
+
+### Step 4: 環境変数の設定
 
 ```bash
 cp .env.example .env
@@ -107,14 +191,21 @@ SUPABASE_KEY=your_supabase_anon_or_service_key_here
 ```
 
 > 💡 **その他の環境変数について:**
-> `DISCORD_TOKEN` や `CLIENT_ID` などの各種設定値は、セキュリティ上の理由から **Supabase Vault**（Vault Secrets）に保存する仕組みになっています。もし Vault を使用しない場合は、上記の `.env` ファイルに直接キーと値（例: `DISCORD_TOKEN=...`）を追記することでフォールバック（代用）として動作します。
+> `DISCORD_TOKEN` や `CLIENT_ID` などの各種設定値は、セキュリティ上の理由から **Supabase Vault**（Vault Secrets）に保存する仕組みになっています。Supabase ダッシュボードの `Settings > Vault` から以下のシークレットを追加してください：
+> 
+> - `DISCORD_TOKEN` (必須): ボットのトークン
+> - `CLIENT_ID` (必須): アプリケーションID
+> - `OWNER_DISCORD_ID` (推奨): 新規サーバー参加時の2FA / オーナー機能など
+> - `OWNER_EMAIL`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`: 2FAメール送信用設定
+> 
+> ※Vault を使用しない場合は、上記の `.env` ファイルに直接キーと値（例: `DISCORD_TOKEN=...`）を追記することでフォールバック（代用）として動作します。
 > 
 > 🔒 **サーバー追加時の2FA認証について**:
-> Vault または `.env` 内で `OWNER_DISCORD_ID` を設定しておくと、Botが新しいサーバーに参加した際にオーナーのDM宛に認証リンクが送付されます。リンクから承認することでそのサーバーでの利用が許可されます。
+> Vault または `.env` 内で `OWNER_EMAIL` 等を設定しておくと、Botが新しいサーバーに参加した際に指定先へメールで認証コードが送付されます。DMで承認することでそのサーバーで利用可能になります。
 
 ---
 
-### Step 4: スラッシュコマンドの登録
+### Step 5: スラッシュコマンドの登録
 
 ```bash
 node deploy-commands.js
@@ -122,7 +213,7 @@ node deploy-commands.js
 
 ---
 
-### Step 5: Botとシステムの起動
+### Step 6: Botとシステムの起動
 
 OSに合わせて以下の手順で起動してください。
 

@@ -327,7 +327,26 @@ function startBot() {
   isBotStopping = false;
   pendingStart = false;
   const projectRoot = path.join(__dirname, '..');
+
+  // Kill any orphaned bot processes left over from a previous crash/restart
+  // so we never end up with two competing instances.
+  try {
+    if (process.platform === 'win32') {
+      exec('taskkill /F /IM node.exe /FI "WINDOWTITLE eq src/index.js"', () => {});
+    } else {
+      exec('pkill -f "node src/index.js" || true', () => {});
+    }
+  } catch (e) { /* best-effort */ }
+
+  console.log('[Dashboard] Starting bot process...');
   botProcess = spawn('node', ['src/index.js'], { cwd: projectRoot });
+
+  botProcess.on('error', (err) => {
+    console.error('[Dashboard] Failed to start bot process:', err.message);
+    io.emit('log', { text: `[CRITICAL ERR] ボットプロセスの起動に失敗しました: ${err.message}`, type: 'err' });
+    botProcess = null;
+    isBotStopping = false;
+  });
 
   const rl = readline.createInterface({ input: botProcess.stdout, terminal: false });
 
@@ -442,6 +461,8 @@ function startBot() {
   });
 }
 
+// Safety net: if close never fires (e.g. SIGKILL was silently ignored), reset
+// the stopping flag after 10s so the next startBot() isn't permanently blocked.
 function stopBot() {
   if (!botProcess) {
     // Nothing to stop — make sure flags are clean so startBot() isn't blocked.
@@ -453,13 +474,46 @@ function stopBot() {
   pendingStart = false;
   const p = botProcess;
   try { p.stdin.write('SHUTDOWN\n'); } catch(e) {}
-  setTimeout(() => { 
+  setTimeout(() => {
     // Hard kill the specific process instance if it's still somehow alive
-    try { p.kill('SIGKILL'); } catch(e) {} 
+    try { p.kill('SIGKILL'); } catch(e) {}
   }, 3000);
+  // Safety: if 'close' never fires, unblock after 10s
+  setTimeout(() => {
+    if (isBotStopping) {
+      console.warn('[Dashboard] stopBot safety timeout: force-resetting isBotStopping flag.');
+      isBotStopping = false;
+      botProcess = null;
+      if (pendingStart) {
+        pendingStart = false;
+        setTimeout(startBot, 500);
+      }
+    }
+  }, 10000);
 }
 
+
+
 // ═══ SOCKET ═══
+
+// Extracted so both 'kill_all' and 'shutdown_all' can call the same logic.
+function doKillAll() {
+  // 1. Tell all connected browsers the system is shutting down
+  io.emit('system_shutdown');
+  io.emit('action_response', { action: 'kill_all', status: 'pending', message: '⏻ エコシステムを終了中...' });
+
+  // 2. Gracefully stop the bot subprocess first
+  stopBot();
+
+  // 3. Exit the dashboard process cleanly after a short delay so the socket
+  //    messages above have time to be delivered to the browser.
+  //    The OS will release port 3000 once this process exits.
+  setTimeout(() => {
+    server.close();
+    process.exit(0);
+  }, 1500);
+}
+
 io.on('connection', (socket) => {
   // Send current service status on connect
   socket.emit('action_response', { action: 'connected', status: 'ok', message: 'ダッシュボードが接続されました。' });
@@ -491,24 +545,9 @@ io.on('connection', (socket) => {
 
     stopBot();
   });
-  socket.on('kill_all', () => {
-    io.emit('system_shutdown');
-    io.emit('action_response', { action: 'kill_all', status: 'pending', message: '⏻ エコシステムを終了中...' });
-    // Stop the bot process first so IPC is cleanly shut down
-    stopBot();
-    if (process.platform === 'win32') {
-      spawn('cmd.exe', ['/c', 'ShutdownZundamon.bat'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
-    } else {
-      // Let the shell script kill the dashboard process externally so the OS
-      // fully releases port 3000 before start-macOS.command checks it.
-      spawn('sh', ['stop-macOS.command'], { cwd: path.join(__dirname, '..'), detached: true, stdio: 'ignore' }).unref();
-    }
-    // Give the socket a moment to deliver the system_shutdown event, then exit.
-    // The stop script will also kill us via pkill, whichever comes first is fine.
-    setTimeout(() => process.exit(0), 2000);
-  });
-  // Legacy alias
-  socket.on('shutdown_all', () => socket.emit('kill_all'));
+  socket.on('kill_all', () => doKillAll());
+  // Legacy alias — now correctly calls the server-side handler
+  socket.on('shutdown_all', () => doKillAll());
 
   socket.on('leave_guild', ({ guildId }) => {
     io.emit('action_response', { action: 'leave_guild', status: 'pending', message: `🚪 サーバー ${guildId} から退出中...` });

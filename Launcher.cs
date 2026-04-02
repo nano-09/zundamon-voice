@@ -30,19 +30,7 @@ class Program
             return;
         }
 
-        // 1. Start Ollama (minimized)
-        try {
-            Process.Start(new ProcessStartInfo {
-                FileName = "ollama",
-                Arguments = "serve",
-                UseShellExecute = true,
-                WindowStyle = ProcessWindowStyle.Minimized
-            });
-            Console.WriteLine("[OK] Started Ollama.");
-        } catch {}
-
-
-        // 2. Start Voicevox (minimized)
+        // 1. Start Voicevox (minimized)
         string voicevoxPath = @"F:\Voicevox\VOICEVOX.exe";
         try {
             if (File.Exists(voicevoxPath)) {
@@ -53,6 +41,17 @@ class Program
                 });
                 Console.WriteLine("[OK] Started VOICEVOX.");
             }
+        } catch {}
+
+        // 2. Start Ollama (minimized)
+        try {
+            Process.Start(new ProcessStartInfo {
+                FileName = "ollama",
+                Arguments = "serve",
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Minimized
+            });
+            Console.WriteLine("[OK] Started Ollama.");
         } catch {}
 
         // 3. Start Dashboard Server (only if not already running)

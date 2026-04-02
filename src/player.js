@@ -363,7 +363,7 @@ export async function enqueueMusic(guildId, query, userId) {
         artist = video.author?.name || null;
       } else {
         // Fallback to ytExec if Video ID extraction fails (unlikely)
-        const info = await ytExec(query, { dumpSingleJson: true, noPlaylist: true });
+        const info = await ytExec(query, { dumpSingleJson: true, noPlaylist: true, noCheckCertificates: true });
         title = info.title || 'Unknown Title';
         const d = parseInt(info.duration) || 0;
         const m = Math.floor(d / 60);
@@ -553,7 +553,8 @@ async function processQueue(guildId) {
     else if (item.type === 'music') {
       state.currentSong = item;
 
-      const ytdlpBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/youtube-dl-exec/bin/yt-dlp.exe');
+      const ytdlpBinLocation = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+      const ytdlpBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), `../node_modules/youtube-dl-exec/bin/${ytdlpBinLocation}`);
 
       const ytdlp = spawn(ytdlpBin, [
         item.url,
@@ -564,7 +565,8 @@ async function processQueue(guildId) {
         '--no-cache-dir',
         '--no-part',
         '--ignore-config',
-        '--js-runtimes', 'node'
+        '--js-runtimes', 'node',
+        '--no-check-certificates'
       ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
       const cfg = getGuildConfig(guildId);
@@ -601,7 +603,9 @@ async function processQueue(guildId) {
       });
       ffmpeg.stderr.on('data', data => {
         const msg = data.toString().trim();
-        if (msg.includes('Error')) console.error(`[G:${guildId}] [ffmpeg] Error:`, msg);
+        if (msg.includes('Error') && !msg.includes('Broken pipe') && !msg.includes('signal 15')) {
+          console.error(`[G:${guildId}] [ffmpeg] Error:`, msg);
+        }
       });
 
       ytdlp.on('error', err => console.error(`[G:${guildId}] [yt-dlp] Spawn error:`, err.message));
@@ -697,7 +701,9 @@ async function processTtsQueue(guildId) {
 
     ffmpeg.stderr.on('data', data => {
       const msg = data.toString().trim();
-      if (msg.includes('Error')) console.error(`[G:${guildId}] [TTS ffmpeg] Error:`, msg);
+      if (msg.includes('Error') && !msg.includes('Broken pipe') && !msg.includes('signal 15')) {
+        console.error(`[G:${guildId}] [TTS ffmpeg] Error:`, msg);
+      }
     });
 
     const resource = createAudioResource(ffmpeg.stdout, {
