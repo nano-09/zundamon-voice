@@ -69,7 +69,7 @@ namespace ZundamonInstaller
                 }
 
                 Console.WriteLine("\n指定されたフォルダにボットのファイルがありません。GitHubから最新のファイルをダウンロードします...");
-                int cloneResult = RunCommandWait("git", "clone https://github.com/nano-09/zundamon-voice.git .", targetDir);
+                int cloneResult = RunCommandWait("git", "clone https://github.com/nano-09/zundamon-voice .", targetDir);
                 if (cloneResult != 0)
                 {
                     ErrorExit("ファイルのダウンロード（git clone）に失敗しました。");
