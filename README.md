@@ -1,8 +1,6 @@
 # zundamon-voice 🟢
 
-Discordのボイスチャンネルで**ずんだもん**と直接おしゃべりしたり、テキストチャンネルのメッセージを読み上げたりできる AI Discord Bot です。
-
-6GB VRAM 環境でも快適に動作するように最適化済み。Ollama（ローカルLLM）、Whisper（音声認識）、VOICEVOX（音声合成）、MCP Web検索を組み合わせ、ずんだもんのキャラクターを完全に保った自然な会話を実現しています。
+Discordのボイスチャンネルで**ずんだもん**テキストチャンネルのメッセージを読み上げる Discord Bot です。
 
 ---
 
@@ -11,7 +9,6 @@ Discordのボイスチャンネルで**ずんだもん**と直接おしゃべり
 | 機能 | 説明 |
 |------|------|
 | 🗣️ テキスト読み上げ | テキストチャンネルのメッセージをずんだもんの声で読み上げ |
-| 🌐 Web検索 (MCP) | `/search` コマンドで最新のネット情報を検索して、ずんだもんが回答 |
 | 🎤 ユーザー別の声設定 | ユーザーごとに話者IDと音声パラメータ（速度・ピッチ・音量）を記憶 |
 | 🧹 自動チャット削除 | 指定した時間ごとにチャンネルのメッセージを自動クリーンアップ |
 | 😭 絵文字の読み上げ | 絵文字を日本語の感情表現に変換して読み上げ |
@@ -30,7 +27,6 @@ Discordのボイスチャンネルで**ずんだもん**と直接おしゃべり
 |-------------|------|-------------|
 | **Node.js** v18+ | ボット本体 | [nodejs.org](https://nodejs.org/) |
 | **VOICEVOX** | ずんだもんの声合成 | [voicevox.hiroshiba.jp](https://voicevox.hiroshiba.jp/) |
-| **Ollama** | ローカルAI (※ `/search` 機能に必要) | [ollama.com](https://ollama.com/) |
 | **Discord Bot Token** | Bot認証 | [Developer Portal](https://discord.com/developers/applications) |
 
 > ⚠️ Developer Portal → 対象のBot → **Privileged Gateway Intents** → **Message Content Intent** を必ずオンにしてください。
@@ -69,23 +65,26 @@ Discordのボイスチャンネルで**ずんだもん**と直接おしゃべり
 
 ### Step 1: 外部ツールの準備
 
-```bash
-# （任意）/search コマンドを使用する場合、Ollamaインストール後、AIモデルをダウンロード (約4.7GB, 6GB VRAM以上推奨)
-ollama pull qwen2.5:7b
-```
-
 VOICEVOXはインストールするだけでOKです。起動はランチャーが自動で行います。
-※YouTube再生用の `ffmpeg` などの依存関係は Node のインストール時に自動でセットアップされます。
 
 ---
 
 ### Step 2: Botのインストール
+
+**🪟 Windowsユーザーの方 (全自動インストーラー)**
+1. ダウンロードしたフォルダ内の `1_Install.bat` をダブルクリックします。
+2. インストーラーが起動するので、画面の指示（日本語）に従って、インストール先のフォルダや必要なトークンを入力してください。
+> 💡 必要なファイルの構築、`npm install`、環境変数（.env）の作成、スラッシュコマンドの登録まで全て**全自動**で行われます！完了した方はこのまま「**Step 6**」に進んでください。
+
+<details>
+<summary>🍎 macOS または手動でインストールする方向けの手順</summary>
 
 ```bash
 git clone https://github.com/<あなたのユーザー名>/zundamon-voice.git
 cd zundamon-voice
 npm install
 ```
+</details>
 
 ---
 
@@ -173,7 +172,8 @@ CREATE POLICY "Bot Update Access sounds" ON storage.objects FOR UPDATE USING (bu
 
 ---
 
-### Step 4: 環境変数の設定
+### Step 4: 環境変数の設定 (手動で行う場合のみ)
+> ⚠️ **注意:** `SetupZundamon.exe` を使用した方はこのステップは不要です。
 
 ```bash
 cp .env.example .env
@@ -205,7 +205,8 @@ SUPABASE_KEY=your_supabase_anon_or_service_key_here
 
 ---
 
-### Step 5: スラッシュコマンドの登録
+### Step 5: スラッシュコマンドの登録 (手動で行う場合のみ)
+> ⚠️ **注意:** `SetupZundamon.exe` を使用した方はこのステップは不要です。
 
 ```bash
 node deploy-commands.js
@@ -240,15 +241,15 @@ C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -out:StartZundamon.exe L
 
 ```bash
 # スクリプトに実行権限を付与（初回のみ）
-chmod +x start-macOS.command
+chmod +x 2_Start_macOS.command
 
 # 起動
-./start-macOS.command
+./2_Start_macOS.command
 ```
-または、Finderから `start-macOS.command` をダブルクリックしても起動できます。
+または、Finderから `2_Start_macOS.command` をダブルクリックしても起動できます。
 
 **終了方法（macOS）**
-- スクリプトが実行されているターミナルウィンドウで `Ctrl + C` を押して終了します。
+- スクリプトが実行されているターミナルウィンドウで `Ctrl + C` を押すか、`3_Shutdown_macOS.command` を実行して終了します。
 
 ## 🎮 コマンド一覧
 
@@ -257,7 +258,6 @@ chmod +x start-macOS.command
 |---------|------|
 | `/vc` | ボイスチャンネルに接続・移動・退出（トグルのように動作） |
 | `/setchannel <チャンネル>` | テキスト読み上げの対象チャンネルを設定 |
-| `/search <テキスト>` | ウェブ検索してずんだもんがテキストで答える |
 | `/serverstatus` | サーバーの設定と接続状態を確認 |
 | `/mystatus` | あなた個人の声の設定を確認 |
 | `/help` | コマンド一覧を表示 |
@@ -305,24 +305,6 @@ Zundamonは各サーバーごとに独立したサウンドボード音源とカ
 
 - **`/customsound add <キーワード> <添付ファイル>`**: Discord上で `.mp3` などの音源ファイルを直接アップロードするだけで、そのサーバー専用の効果音として登録され、即座に **Supabase Storage** のクラウドに保管されます。
 - **`/customemoji add <絵文字> <読み方>`**: オリジナルのカスタム絵文字やスタンプがチャットに貼られた時、どんな言葉として読み上げるかを定義できます。
-
----
-
-## 🧠 AI処理の流れ (`/search` コマンド実行時)
-
-```
-⌨️ ユーザーが /search コマンドで質問する
-  ↓
-📖 カスタム辞書でスペル修正（/addwordのルール適用）
-  ↓
-🔧 Ollamaが固有名詞の誤変換を自動補正、最適な検索キーワードを生成
-  ↓
-🌐 MCP open-websearch でWeb検索を自動実行
-  ↓
-💬 ずんだもんのキャラで日本語回答生成 + 検索結果を元に要約
-  ↓
-🔊 (VC接続時) VOICEVOX でずんだもんの声に合成して再生しつつテキスト返信
-```
 
 ---
 

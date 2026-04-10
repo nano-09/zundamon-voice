@@ -2,7 +2,7 @@
 REM Get the path of the current directory
 set "SCRIPT_DIR=%~dp0"
 REM The Start script/exe we want to target
-set "TARGET=%SCRIPT_DIR%StartZundamon.exe"
+set "TARGET=%SCRIPT_DIR%2_Start.bat"
 REM Where the shortcut will be placed
 set "SHORTCUT_PATH=%USERPROFILE%\Desktop\Start Zundamon.lnk"
 

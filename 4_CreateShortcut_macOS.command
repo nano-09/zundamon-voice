@@ -3,7 +3,7 @@
 # Move to the directory where this script is located
 cd "$(dirname "$0")"
 SCRIPT_DIR="$(pwd)"
-START_TARGET="$SCRIPT_DIR/start-macOS.command"
+START_TARGET="$SCRIPT_DIR/2_Start_macOS.command"
 ICON_PATH="$SCRIPT_DIR/zundamon-icon.ico"
 
 # Use AppleScript to create a true macOS Alias on the Desktop

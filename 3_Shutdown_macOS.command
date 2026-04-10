@@ -60,15 +60,8 @@ else
     echo "      ✅ Port 3000 is free."
 fi
 
-# 3. Stop Ollama
-echo "[3/4] Closing Ollama..."
-osascript -e 'quit app "Ollama"' > /dev/null 2>&1
-pkill -f "ollama run"   > /dev/null 2>&1
-pkill -f "ollama serve" > /dev/null 2>&1
-pkill -f "Ollama"       > /dev/null 2>&1
-
-# 4. Stop Voicevox
-echo "[4/4] Closing VOICEVOX..."
+# 3. Stop Voicevox
+echo "[3/3] Closing VOICEVOX..."
 osascript -e 'quit app "VOICEVOX"' > /dev/null 2>&1
 
 echo ""

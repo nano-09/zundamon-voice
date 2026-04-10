@@ -43,18 +43,7 @@ class Program
             }
         } catch {}
 
-        // 2. Start Ollama (minimized)
-        try {
-            Process.Start(new ProcessStartInfo {
-                FileName = "ollama",
-                Arguments = "serve",
-                UseShellExecute = true,
-                WindowStyle = ProcessWindowStyle.Minimized
-            });
-            Console.WriteLine("[OK] Started Ollama.");
-        } catch {}
-
-        // 3. Start Dashboard Server (only if not already running)
+        // 2. Start Dashboard Server (only if not already running)
         if (!isDashboardRunning) {
             try {
                 ProcessStartInfo dashboardInfo = new ProcessStartInfo {

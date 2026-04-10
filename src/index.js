@@ -7,7 +7,6 @@ import { commandDefinitions, handleCommand, startCleanChatTimer } from './comman
 import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel, isConnected as isBotConnected, setDiscordClient, pauseMusic, skipMusic, stopMusic } from './player.js';
 import { initBotConfig, getBotConfig } from './botConfig.js';
 import { getGuildConfig, setGuildConfig, initConfigs, getFullGuildConfig, refreshConfig } from './config.js';
-import { initMcpClient, isMcpReady } from './mcpClient.js';
 import { isGuildAuthorized, isGuildBlocked, sendLocalOtp, verifyLocalOtp } from './auth.js';
 import { initGuildTable, snapshotGuildAnalytics, logToSupabase, deleteGuildConfigFromDb } from './db_supabase.js';
 import fs from 'fs';
@@ -242,13 +241,6 @@ client.once(Events.ClientReady, async (c) => {
         }
       }
 
-      // Pre-initialize the MCP server so the first search isn't delayed by NPX starting
-      console.log('[SYS] [INIT] Starting Web Search (MCP)...');
-      initMcpClient().then(() => {
-        console.log('[SYS] [INIT] Web Search (MCP) is ready.');
-      }).catch(err => {
-        console.error('[MCP] Pre-initialization failed:', err);
-      });
 
       console.log('[SYS] [INIT] Discord Bot initialization complete.');
       console.log('[SYS] [INIT] Startup background tasks finalized.');
@@ -469,7 +461,7 @@ export const broadcastStats = () => {
     channels: client.channels.cache.size,
     ping: wsPing,
     uptime: client.uptime,
-    websearchStatus: isMcpReady() ? 'online' : 'connecting',
+    websearchStatus: undefined,
     guildsDetail: guildsDetail,
     user: {
       username: client.user.username,
@@ -677,14 +669,11 @@ function shutdown() {
   leaveAllChannels();
   client.destroy();
 
-  console.log('[SYS] Shutting down Ollama and Voicevox...');
+  console.log('[SYS] Shutting down VOICEVOX...');
   if (process.platform === 'win32') {
-    exec('taskkill /F /IM ollama.exe /T', () => {});
-    exec('taskkill /F /IM "ollama app.exe" /T', () => {});
     exec('taskkill /F /IM VOICEVOX.exe /T', () => {});
     exec('taskkill /F /IM run.exe /T', () => {});
   } else {
-    exec('pkill -f ollama', () => {});
     exec('pkill -f VOICEVOX', () => {});
     exec('pkill -f run', () => {});
   }

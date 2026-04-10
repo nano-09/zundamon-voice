@@ -21,8 +21,8 @@ export const DEFAULT_SETTINGS = {
   pitch: 0.0,
   volume: 1.0,
   speakerId: 3,
-  readName: true,
-  announceVoice: false,
-  soundboardMode: false,
-  karaokeVolume: 1.0
+  readName: false,
+  announceVoice: true,
+  soundboardMode: true,
+  karaokeVolume: 0.1
 };

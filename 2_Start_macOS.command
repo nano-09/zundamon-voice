@@ -41,13 +41,8 @@ npm install > /dev/null
 echo "[1/3] Starting VOICEVOX..."
 open -a VOICEVOX 2>/dev/null || echo "      (Could not find VOICEVOX in Applications. Please open it manually if needed.)"
 
-# 2. Start Ollama
-echo "[2/3] Starting Ollama..."
-# Try to start the macOS app in the background, fallback to CLI if not installed as an app
-open -g -a Ollama 2>/dev/null || (export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin; ollama serve &> /dev/null &)
-
-# 3. Start Dashboard Server and Bot
-echo "[3/3] Starting Web Dashboard and Bot..."
+# 2. Start Dashboard Server and Bot
+echo "[2/2] Starting Web Dashboard and Bot..."
 echo "========================================================"
 echo "Opening browser in 2 seconds..."
 (sleep 2 && open http://localhost:3000) &

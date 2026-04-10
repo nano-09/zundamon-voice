@@ -1,10 +1,9 @@
 // src/ai.js
-// Handles LLM (Ollama) locally for search and corrections
+// Handles LLM (Ollama) locally for text corrections
 
 import 'dotenv/config';
 import { saveMessage, getRecentHistory } from './db.js';
 import { getGuildConfig } from './config.js';
-import { initMcpClient, callMcpTool } from './mcpClient.js';
 import { logToSupabase } from './db_supabase.js';
 import { incrementCounter } from './stats.js';
 import { getBotConfig } from './botConfig.js';
@@ -32,74 +31,7 @@ export function cancelAiGeneration(guildId) {
   }
 }
 
-// ── Built-in Web Search (MCP) ──────────────────────────────────────────
-/**
- * Uses the open-websearch MCP Server to fetch structured web results.
- * @param {string} query
- * @returns {Promise<{text: string, urls: string[]}>}
- */
-export async function searchWeb(guildId, query, userId = null, maxResults = 5) {
-  try {
-    console.log(`[G:${guildId}] [SYS] Searching the web for: "${query}"${userId ? ` (User: ${userId})` : ''}`);
-    logToSupabase(guildId, 'sys', `Searching web: ${query}${userId ? ` (User: ${userId})` : ''}`);
 
-    // Ensure MCP client is running
-    await initMcpClient();
-
-    // Call the "search" tool from open-websearch
-    const result = await callMcpTool('search', {
-      query: query,
-      limit: 10,
-      engines: ['duckduckgo']
-    });
-
-    if (!result || !result.content || result.content.length === 0) {
-      console.log(`[Search] No content returned from MCP.`);
-      return { text: '', urls: [] };
-    }
-
-    const jsonString = result.content[0].text;
-    let items;
-    try {
-      const parsed = JSON.parse(jsonString);
-      // open-websearch returns { results: [...] } — check named keys first
-      if (parsed && Array.isArray(parsed.results)) items = parsed.results;
-      else if (parsed && Array.isArray(parsed.data)) items = parsed.data;
-      else if (Array.isArray(parsed)) items = parsed;
-      else {
-        console.error(`[Search] Unexpected MCP response structure:`, JSON.stringify(parsed).slice(0, 200));
-        return { text: '', urls: [] };
-      }
-    } catch (e) {
-      console.error(`[Search] Failed to parse MCP response as JSON.`);
-      return { text: '', urls: [] };
-    }
-
-    const compiledResults = [];
-    const uniqueUrls = [];
-
-    const filteredItems = items.filter(item => {
-      const desc = (item.description || '').toLowerCase();
-      return !desc.includes('javascript is disabled') && !desc.includes("site won't allow us");
-    });
-
-    const finalItems = (filteredItems.length >= 3) ? filteredItems : items;
-
-    for (const item of finalItems.slice(0, maxResults)) {
-      if (!item.url || uniqueUrls.includes(item.url)) continue;
-      uniqueUrls.push(item.url);
-      
-      const title = item.title || 'No Title';
-      const description = item.description || '(No description available)';
-      compiledResults.push(`### ${title}\n${description}\nSource: ${item.url}`);
-    }
-
-    return { text: compiledResults.join('\n\n'), urls: uniqueUrls };
-  } catch (error) {
-    console.error(`[Search] MCP tool call failed:`, error);
-    return { text: '', urls: [] };
-  }
-}
 
 /**
  * Uses a fast direct Ollama call to correct misrecognized proper nouns.
@@ -133,106 +65,4 @@ export async function correctProperNouns(guildId, text, userId = null) {
     return text;
   }
 }
-
-/**
- * Generates a context-aware search query.
- */
-export async function generateSearchQuery(guildId, text, history) {
-  if (!history || history.length === 0) return text;
-
-  try {
-    console.log(`[G:${guildId}] [SYS] Analyzing search intent...`);
-    let historyText = history.map(m => {
-      let role = m.role === 'assistant' ? 'ずんだもん' : 'ユーザー';
-      return `${role}: ${m.content.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim()}`;
-    }).join('\n');
-
-    const prompt = `直近の会話履歴と最新の発言から、最適な検索キーワードのみを出力してください。\n\n【履歴】\n${historyText}\n\n【最新】\n${text}\n\n【回答】`;
-
-    const response = await fetch(`${getOllamaUrl()}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: getOllamaModel(), prompt: prompt, stream: false, options: { temperature: 0.1 } })
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      let query = data.response?.trim();
-      query = query.replace(/[。、！\\?\\?？]|(をおしえて|について|の最新)|です|ます/g, '').trim();
-      if (query) return query;
-    }
-  } catch (err) {
-    console.error(`[AI] Error in generateSearchQuery:`, err.message);
-  }
-  return text;
-}
-
-/**
- * Helper to clean AI response.
- */
-function cleanAiReply(reply) {
-  let cleaned = reply;
-  if (cleaned.includes('</thought>')) {
-    cleaned = cleaned.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim() || cleaned.replace(/<\/?thought>/gi, '').trim();
-  } else {
-    cleaned = cleaned.replace(/<thought>/gi, '').trim();
-  }
-  return cleaned.replace(/^(thought[：:：]|ずんだもん[：:：]|回答[：:：]|答え[：:：])/gi, '').trim();
-}
-
-/**
- * Processes a text-based search command (/search).
- */
-export async function processSearchCommand(guildId, userId, text) {
-  try {
-    const correctedText = await correctProperNouns(guildId, text, userId).catch(() => text);
-    const history = await getRecentHistory(guildId, 6);
-    const searchQuery = await generateSearchQuery(guildId, correctedText, history).catch(() => correctedText);
-
-    const searchResults = await searchWeb(guildId, searchQuery, userId);
-    const searchContext = searchResults.text ? `\n\n【ウェブ検索結果】\n${searchResults.text}` : '';
-
-    const { emitLiveSnapshot, broadcastStats } = await import('./index.js');
-    incrementCounter(guildId, 'ai_queries');
-    emitLiveSnapshot(guildId, { ai_queries: 1 });
-    broadcastStats();
-
-    const messages = [
-      {
-        role: 'system',
-        content: `# あなたは「ずんだもん」なのだ。
-一人称は「ボク」。文末は必ず「なのだ」「なのだ！」なのだ。
-提供された検索結果を最優先して1〜3文で簡潔に回答するのだ。丸投げは禁止なのだ。`
-      },
-      ...history,
-      {
-        role: 'user',
-        content: `「${correctedText}」${searchContext}`
-      }
-    ];
-
-    if (activeGuildControllers.has(guildId)) activeGuildControllers.get(guildId).abort();
-    const controller = new AbortController();
-    activeGuildControllers.set(guildId, controller);
-
-    try {
-      const response = await fetch(`${getOllamaUrl()}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({ model: getOllamaModel(), messages, stream: false, options: { temperature: 0.4 } })
-      });
-      if (!response.ok) throw new Error('Ollama error');
-      const data = await response.json();
-      let reply = cleanAiReply(data.message?.content || '');
-      await saveMessage(guildId, userId, 'user', correctedText);
-      await saveMessage(guildId, 'bot', 'assistant', reply);
-      return { reply, urls: searchResults.urls };
-    } finally {
-      activeGuildControllers.delete(guildId);
-    }
-  } catch (err) {
-    console.error(`[AI] Error in processSearchCommand:`, err.message);
-    return { reply: 'ごめんなのだ、うまく検索できなかったのだ。', urls: [] };
-  }
-}
+

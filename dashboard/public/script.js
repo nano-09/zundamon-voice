@@ -414,12 +414,6 @@ socket.on('stats_update', (data) => {
       }
     }
   }
-
-  // Web Search status
-  if (data.websearchStatus !== undefined) {
-    const ws = data.websearchStatus;
-    setPip('pip-websearch', ws === 'online' ? 'online' : ws === 'connecting' ? 'warning' : 'error');
-  }
 });
 
 socket.on('config_updated', (data) => {
@@ -496,7 +490,6 @@ socket.on('system_resources', (res) => {
 
   // Service pill for Voicebox
   if (res.voicevoxOk !== undefined) setPip('pip-voicevox', res.voicevoxOk ? 'online' : 'error');
-  if (res.ollamaOk !== undefined) setPip('pip-ollama', res.ollamaOk ? 'online' : 'warning');
 });
 
 socket.on('action_response', (res) => {
@@ -508,7 +501,6 @@ socket.on('snapshot_update', (snap) => {
 
   // 1. Update KPIs (Add deltas)
   if (el('a-tts')) el('a-tts').textContent = parseInt(el('a-tts').textContent || 0) + (snap.texts_spoken || 0);
-  if (el('a-ai')) el('a-ai').textContent = parseInt(el('a-ai').textContent || 0) + (snap.ai_queries || 0);
   
   const snapCmdTotal = Object.values(snap.commands_used || {}).reduce((s, v) => s + v, 0);
   if (el('a-cmds')) el('a-cmds').textContent = parseInt(el('a-cmds').textContent || 0) + snapCmdTotal;
@@ -933,13 +925,11 @@ async function loadDetailAnalytics(guildId) {
 
   // KPIs
   let totalTts = 0;
-  let totalAi = 0;
   let totalCmds = 0;
   let peakUsers = 0;
 
   data.forEach(r => {
     totalTts += (r.texts_spoken || 0);
-    totalAi += (r.ai_queries || 0);
     peakUsers = Math.max(peakUsers, r.members_active || 0);
     Object.values(r.commands_used || {}).forEach(v => {
       totalCmds += v;
@@ -947,7 +937,6 @@ async function loadDetailAnalytics(guildId) {
   });
 
   el('a-tts').textContent = totalTts;
-  el('a-ai').textContent = totalAi;
   el('a-cmds').textContent = totalCmds;
   el('a-users').textContent = peakUsers;
 
@@ -1095,7 +1084,7 @@ function renderConfig(settings, permissions) {
     };
 
     const mapping = {
-      'vc': '🎮 基本・一般', 'help': '🎮 基本・一般', 'mystatus': '🎮 基本・一般', 'search': '🎮 基本・一般', 'serverstatus': '🎮 基本・一般',
+      'vc': '🎮 基本・一般', 'help': '🎮 基本・一般', 'mystatus': '🎮 基本・一般', 'serverstatus': '🎮 基本・一般',
       'set': '🎙️ ユーザー設定',
       'readname': '🛡️ サーバー管理', 'announce': '🛡️ サーバー管理', 'trim': '🛡️ サーバー管理',
       'play': '🎶 音楽再生', 'pause': '🎶 音楽再生', 'skip': '🎶 音楽再生', 'queue': '🎶 音楽再生', 'lyrics': '🎶 音楽再生', 'musicvolume': '🎶 音楽再生', 'loop': '🎶 音楽再生',
@@ -1165,7 +1154,7 @@ function createTagInnerHtml(id, meta) {
 
 const ALL_COMMANDS = [
   'vc', 'setchannel', 'set voice', 'set speed', 'set pitch', 'set volume',
-  'search', 'soundboard', 'serverstatus', 'mystatus', 'help',
+  'soundboard', 'serverstatus', 'mystatus', 'help',
   'readname', 'announce', 'cleanchat', 'trim',
   'permissions set', 'permissions list', 'permissions reset',
   'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume', 'loop',
@@ -1175,7 +1164,7 @@ const ALL_COMMANDS = [
 ];
 
 const COMMAND_CATEGORIES = {
-  '🎮 基本・一般': ['vc', 'help', 'mystatus', 'search', 'serverstatus'],
+  '🎮 基本・一般': ['vc', 'help', 'mystatus', 'serverstatus'],
   '🎙️ ユーザー設定': ['set voice', 'set speed', 'set pitch', 'set volume'],
   '🎶 音楽再生': ['play', 'pause', 'skip', 'loop', 'queue', 'lyrics', 'musicvolume'],
   '🔒 権限・防衛': ['permissions set', 'permissions list', 'permissions reset'],

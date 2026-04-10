@@ -4,7 +4,7 @@
 import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder } from 'discord.js';
 import { joinChannel, leaveChannel, isConnected, enqueue, pauseMusic, skipMusic, enqueueMusic, getQueue, setLoopMode, subscribeToMusic } from './player.js';
 import { getGuildConfig, setGuildConfig, updateGuildMeta, getFullGuildConfig } from './config.js';
-import { cancelAiGeneration, processSearchCommand } from './ai.js';
+import { cancelAiGeneration } from './ai.js';
 import { isGuildAuthorized, isGuildBlocked } from './auth.js';
 import fs from 'fs';
 import path from 'path';
@@ -50,11 +50,6 @@ export const commandDefinitions = [
         .setDescription('読み上げ対象のテキストチャンネル')
         .setRequired(true)
     ),
-
-  new SlashCommandBuilder()
-    .setName('search')
-    .setDescription('ウェブ検索してずんだもんが答えるのだ（読み上げはしないのだ）')
-    .addStringOption(opt => opt.setName('text').setDescription('調べたい内容を入力してほしいのだ').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('serverstatus')
@@ -225,7 +220,7 @@ const cleanTimers = new Map();
 // List of all command names for permission validation
 const ALL_COMMAND_NAMES = [
   'vc', 'set', 'set voice', 'set speed', 'set pitch', 'set volume',
-  'setchannel', 'search', 'soundboard', 'serverstatus', 'mystatus', 'help',
+  'setchannel', 'soundboard', 'serverstatus', 'mystatus', 'help',
   'readname', 'announce', 'cleanchat', 'trim', 'permissions',
   'play', 'pause', 'skip', 'queue', 'lyrics', 'musicvolume',
   'set-server', 'set-server voice', 'set-server speed', 'set-server pitch', 'set-server volume',
@@ -682,9 +677,10 @@ export async function handleCommand(interaction) {
           inline: true
         },
         {
-          name: '🤖 実装モード',
+          name: '🎵 音楽・機能',
           value: `\n` +
             `> **カラオケ:** ${cfg.karaokeMode ? '`ON`' : '`OFF`'}\n` +
+            `> **音楽音量:** \`${cfg.karaokeVolume ?? 1.0}\`\n` +
             `> **サウンドボード:** ${cfg.soundboardMode ? '`ON`' : '`OFF`'}`,
           inline: true
         },
@@ -704,7 +700,6 @@ export async function handleCommand(interaction) {
         {
           name: '🔒 制限・権限',
           value: `> **字数制限:** \`${cfg.trimWordCount || '無制限'}\`\n` +
-            `> **音楽音量:** \`${cfg.karaokeVolume ?? 1.0}\`\n` +
             `> **個別設定:** \`${ruleCount > 0 ? `${ruleCount}件` : 'なし'}\``,
           inline: true
         }
@@ -920,7 +915,6 @@ export async function handleCommand(interaction) {
         commands: [
           { cmd: 'vc', desc: 'ボイスチャンネルに参加・退出・移動' },
           { cmd: 'setchannel', desc: '読み上げ対象のテキストチャンネルを指定' },
-          { cmd: 'search', desc: 'ウェブ検索してずんだもんが答える（読み上げなし）' },
           { cmd: 'serverstatus', desc: 'サーバー設定と接続状態を確認' },
           { cmd: 'mystatus', desc: 'あなたの現在の声設定を確認' },
           { cmd: 'help', desc: 'このヘルプを表示' }

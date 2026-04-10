@@ -372,6 +372,25 @@ function startBot() {
 
     io.emit('log', { text: cleanText, guildId, type: logType });
 
+    // ── Persist every log line to Supabase ──────────────────────────────────
+    // Skip noisy internal markers that are only used for IPC parsing.
+    const isIpcMarker = [
+      '[DASHBOARD_STATS]', '[METADATA]', '[SNAPSHOT]',
+      '[MEMBERS_ROLES]', '[CHANNELS]', '[GUILD_ADDED]',
+      '[GUILD_REMOVED]', '[CONFIG_UPDATED]', '[SYSTEM_INIT]'
+    ].some(marker => cleanText.includes(marker));
+
+    if (!isIpcMarker) {
+      supabase.from('logs_v2').insert([{
+        guild_id:  guildId,
+        type:      logType,
+        message:   cleanText,
+        timestamp: new Date().toISOString(),
+      }]).then(({ error }) => {
+        if (error) console.error('[Dashboard] Supabase log insert error:', error.message);
+      });
+    }
+
     if (cleanText.includes('[DASHBOARD_STATS]')) {
       try {
         const stats = JSON.parse(cleanText.split('[DASHBOARD_STATS]')[1].trim());
@@ -446,6 +465,15 @@ function startBot() {
     if (!text) return;
     console.error('[BOT ERR]', text);
     io.emit('log', { text: `[ERR] ${text}`, type: 'err' });
+    // Persist stderr errors to Supabase
+    supabase.from('logs_v2').insert([{
+      guild_id:  null,
+      type:      'err',
+      message:   `[ERR] ${text}`,
+      timestamp: new Date().toISOString(),
+    }]).then(({ error }) => {
+      if (error) console.error('[Dashboard] Supabase stderr insert error:', error.message);
+    });
   });
 
   botProcess.on('close', (code) => {
@@ -577,12 +605,8 @@ setInterval(async () => {
   const cpuPercent = getCpuUsage();
   const ram = getRAM();
   const voicevoxUrl = process.env.VOICEVOX_URL || 'http://localhost:50021';
-  const ollamaUrl   = process.env.OLLAMA_URL   || 'http://localhost:11434';
-  const [voicevoxOk, ollamaOk] = await Promise.all([
-    checkService(`${voicevoxUrl}/version`),
-    checkService(`${ollamaUrl}/api/tags`),
-  ]);
-  io.emit('system_resources', { cpuPercent, ramUsed: ram.used, ramTotal: ram.total, voicevoxOk, ollamaOk });
+  const voicevoxOk = await checkService(`${voicevoxUrl}/version`);
+  io.emit('system_resources', { cpuPercent, ramUsed: ram.used, ramTotal: ram.total, voicevoxOk });
 }, 5000);
 
 setInterval(() => {
