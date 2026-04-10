@@ -104,12 +104,12 @@ OSに合わせて以下の手順で起動してください。
 | `/preset <save/load/list>` | あなたのお気に入りの声設定を保存・呼び出し |
 | `/set-server voice <ID>` | サーバー全体のデフォルトの声を指定 |
 | `/set-server <speed/pitch/volume>` | サーバー全体のデフォルト音声パラメータを個別に設定 |
-| `/readname <T/F>` | 発言者の名前を読み上げるかどうか |
-| `/announce <T/F>` | ボイスチャンネルの入退室を読み上げるかどうか |
+| `/readname <True/False>` | 発言者の名前を読み上げるかどうか |
+| `/announce <True/False>` | ボイスチャンネルの入退室を読み上げるかどうか |
 | `/trim <文字数>` | 読み上げる最大文字数を設定（0=無効） |
-| `/soundboard <T/F>` | サウンドボードモード（キーワードSE）のオン/オフ |
-| `/customsound <add/rem/list>`| サーバー固有のサウンドボード音源を直接アップロード管理 |
-| `/customemoji <add/rem/list>`| サーバー固有の絵文字読み上げ（文字変換）辞書を管理 |
+| `/soundboard <True/False>` | サウンドボードモード（キーワードSE）のオン/オフ |
+| `/customsound <add/remove/list>`| サーバー固有のサウンドボード音源を直接アップロード管理 |
+| `/customemoji <add/remove/list>`| サーバー固有の絵文字読み上げ（文字変換）辞書を管理 |
 
 ### カラオケモード（音楽再生）
 | コマンド | 説明 |
