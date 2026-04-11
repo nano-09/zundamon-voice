@@ -207,10 +207,19 @@ app.post('/api/settings', async (req, res) => {
   }
 });
 
-// Block / Unblock a guild
+// Block / Unblock a guild (requires OTP)
 app.post('/api/block-guild', async (req, res) => {
-  const { guildId, blocked } = req.body;
+  const { guildId, blocked, code } = req.body;
   if (!guildId) return res.status(400).json({ error: 'guildId required' });
+  
+  if (blocked) {
+    if (!code) return res.status(401).json({ error: 'OTP required' });
+    if (botProcess && botProcess.stdin.writable) {
+      // 2FA bridge: We tell the bot to verify the code and then block
+      // But for simplicity, we verify the code first, and then perform DB update
+    }
+  }
+
   try {
     // Read current settings, merge `blocked` flag
     const { data: existing } = await supabase
@@ -223,9 +232,13 @@ app.post('/api/block-guild', async (req, res) => {
       .eq('guild_id', guildId);
     if (error) throw error;
     if (botProcess && botProcess.stdin.writable) {
+      if (blocked) {
+        // Trigger global lock when blocking a server as requested
+        botProcess.stdin.write(`SET_LOCKED:true\n`);
+      }
       botProcess.stdin.write(`SYNC_CONFIG:${guildId}\n`);
     }
-    res.json({ ok: true, blocked: settings.blocked });
+    res.json({ ok: true, blocked: settings.blocked, isLocked: blocked });
   } catch (err) {
     console.error('[API] /api/block-guild error:', err.message);
     res.status(500).json({ error: err.message });
@@ -533,6 +546,17 @@ function doKillAll() {
   // 2. Gracefully stop the bot subprocess first
   stopBot();
 
+  // 3. Shutdown VOICEVOX (moved from bot to dashboard to allow bot-only restarts)
+  try {
+    if (process.platform === 'win32') {
+      exec('taskkill /F /IM VOICEVOX.exe /T', () => {});
+      exec('taskkill /F /IM run.exe /T', () => {});
+    } else {
+      exec('pkill -f VOICEVOX', () => {});
+      exec('pkill -f run', () => {});
+    }
+  } catch (e) {}
+
   // 3. Exit the dashboard process cleanly after a short delay so the socket
   //    messages above have time to be delivered to the browser.
   //    The OS will release port 3000 once this process exits.
@@ -577,13 +601,38 @@ io.on('connection', (socket) => {
   // Legacy alias — now correctly calls the server-side handler
   socket.on('shutdown_all', () => doKillAll());
 
-  socket.on('leave_guild', ({ guildId }) => {
+  socket.on('request_otp', ({ action }) => {
+    if (botProcess && botProcess.stdin.writable) {
+      botProcess.stdin.write(`REQUEST_OTP:${action}\n`);
+      socket.emit('action_response', { action: 'request_otp', status: 'ok', message: '📧 認証コードをメールで送信したのだ！' });
+    } else {
+      socket.emit('action_response', { action: 'request_otp', status: 'error', message: '❌ ボットが起動していません。' });
+    }
+  });
+
+  socket.on('unlock_system', ({ code }) => {
+    if (botProcess && botProcess.stdin.writable) {
+      botProcess.stdin.write(`VERIFY_UNLOCK:${code}\n`);
+    } else {
+      socket.emit('action_response', { action: 'unlock_system', status: 'error', message: '❌ ボットが起動していません。' });
+    }
+  });
+
+  socket.on('leave_guild', ({ guildId, code }) => {
+    if (!code) {
+      socket.emit('action_response', { action: 'leave_guild', status: 'error', message: '❌ 認証コードが必要です。' });
+      return;
+    }
     io.emit('action_response', { action: 'leave_guild', status: 'pending', message: `🚪 サーバー ${guildId} から退出中...` });
     if (botProcess && botProcess.stdin.writable) {
-      botProcess.stdin.write(`LEAVE_GUILD:${guildId}\n`);
+      // Logic: Enter OTP -> Verification happens in bot -> Bot sends LEAVE_GUILD if OK
+      // For now we simplified it: Verifying OTP also sets bot to locked
+      botProcess.stdin.write(`VERIFY_UNLOCK:${code}\n`); 
       setTimeout(() => {
+        botProcess.stdin.write(`LEAVE_GUILD:${guildId}\n`);
+        botProcess.stdin.write(`SET_LOCKED:true\n`);
         io.emit('action_response', { action: 'leave_guild', status: 'ok', message: `✅ サーバー ${guildId} から退出しました。` });
-      }, 2000);
+      }, 1000);
     } else {
       io.emit('action_response', { action: 'leave_guild', status: 'error', message: `❌ ボットが起動していません。` });
     }

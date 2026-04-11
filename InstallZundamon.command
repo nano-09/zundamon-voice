@@ -15,6 +15,15 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
+echo "[確認] VOICEVOX はインストールされていますか？"
+echo "このボットを動かすには VOICEVOX (アプリ) が必要です。"
+echo "まだの場合は以下のリンクからダウンロードして実行してください："
+echo "👉 https://voicevox.hiroshiba.jp/"
+read -p "準備ができたら Enter キーを押してください..." 
+echo
+echo "OK: 基本環境の確認完了したのだ。"
+echo
+
 echo "--- [ セクション 1: データベース (Supabase) ] ---"
 echo "Supabaseはボットの設定保存や、二段階認証(2FA)に必要です。"
 echo
@@ -106,17 +115,32 @@ CREATE TABLE IF NOT EXISTS user_presets (
     UNIQUE(user_id, name)
 );
 
+);
+
+CREATE TABLE IF NOT EXISTS music_lyrics (
+    video_url TEXT PRIMARY KEY,
+    lyrics TEXT,
+    source TEXT,
+    found BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- RLS (Row Level Security) の有効化
 ALTER TABLE guild_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_analytics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs_v2 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_presets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE music_lyrics ENABLE ROW LEVEL SECURITY;
 
 -- 簡易的なポリシー作成 (ボット/ダッシュボード用)
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'user_presets') THEN
         CREATE POLICY "Allow all access" ON public.user_presets FOR ALL USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'music_lyrics') THEN
+        CREATE POLICY "Allow all access" ON public.music_lyrics FOR ALL USING (true);
     END IF;
 END $$;
 SQL
@@ -128,7 +152,7 @@ while true; do
     read -p ""
     
     all_ok=true
-    for table in guild_configs guild_analytics logs_v2 user_presets; do
+    for table in guild_configs guild_analytics logs_v2 user_presets music_lyrics; do
         # Use curl to check table via PostgREST
         status_code=$(curl -s -o /dev/null -w "%{http_code}" -X HEAD "${supa_url_input%/}/rest/v1/$table?select=count" \
             -H "apikey: $supa_key" \

@@ -16,8 +16,10 @@ import {
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { synthesize } from './tts.js';
 import { getGuildConfig, setGuildConfig, updateGuildMeta, getFullGuildConfig } from './config.js';
+import { fetchLyrics } from './lyrics_utils.js';
 import { logToSupabase } from './db_supabase.js';
 import { clearHistory, clearAllHistory } from './db.js';
+import { isBotLocked, isGuildBlocked } from './auth.js';
 import ytExec from 'youtube-dl-exec';
 import ytSearch from 'yt-search';
 import { spawn } from 'child_process';
@@ -60,7 +62,15 @@ function getGuildState(guildId) {
  * @param {number} [retryCount=0]
  */
 export async function joinChannel(voiceChannel, retryCount = 0) {
-  const state = getGuildState(voiceChannel.guild.id);
+  const guildId = voiceChannel.guild.id;
+  if (isBotLocked()) {
+    throw new Error('🔓 ボットがグローバルロックされています。オーナーによる解除が必要です。');
+  }
+  if (isGuildBlocked(guildId)) {
+    throw new Error('🚫 このサーバーでのボットの使用は制限されています。');
+  }
+
+  const state = getGuildState(guildId);
 
   // If already connected to this channel, no-op
   if (
@@ -331,6 +341,7 @@ export function enqueueFile(guildId, filePath) {
  * @param {string} userId User who requested
  */
 export async function enqueueMusic(guildId, query, userId) {
+  if (isBotLocked() || isGuildBlocked(guildId)) return null;
   const state = getGuildState(guildId);
   if (!state.connection) return null;
 
@@ -340,6 +351,7 @@ export async function enqueueMusic(guildId, query, userId) {
     let duration = '0:00';
     let artist = null;
     let track = null;
+    let thumbnail = null;
 
     // If it's not a direct youtube URL, search it with yt-search
     if (!query.includes('youtube.com') && !query.includes('youtu.be')) {
@@ -354,6 +366,7 @@ export async function enqueueMusic(guildId, query, userId) {
       title = video.title;
       duration = video.timestamp;
       artist = video.author?.name || null;
+      thumbnail = video.thumbnail || video.image || null;
     } else {
       // If it is a direct URL, grab the basic info metadata via yt-search
       const videoId = query.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
@@ -366,6 +379,7 @@ export async function enqueueMusic(guildId, query, userId) {
         const s = String(d % 60).padStart(2, '0');
         duration = video.duration.timestamp || `${m}:${s}`;
         artist = video.author?.name || null;
+        thumbnail = video.thumbnail || video.image || null;
       } else {
         // Fallback to ytExec if Video ID extraction fails (unlikely)
         const info = await ytExec(query, { dumpSingleJson: true, noPlaylist: true, noCheckCertificates: true });
@@ -376,18 +390,25 @@ export async function enqueueMusic(guildId, query, userId) {
         duration = info.duration_string || `${m}:${s}`;
         artist = info.artist || info.uploader || null;
         track = info.track || info.alt_title || null;
+        thumbnail = info.thumbnail || null;
       }
     }
 
-    state.queue.push({
+    const song = {
       type: 'music',
       url: url,
       title: title,
       duration: duration,
       artist,
       track,
+      thumbnail,
       userId
-    });
+    };
+
+    state.queue.push(song);
+
+    // Proactively fetch lyrics in the background to populate cache
+    fetchLyrics(song).catch(e => console.error('[Lyrics] Proactive fetch failed:', e.message));
 
     if (!state.playing) {
       processQueue(guildId);
@@ -503,6 +524,27 @@ export function setLoopMode(guildId, mode) {
 }
 
 /**
+ * Randomizes the upcoming music queue for a guild.
+ * @param {string} guildId
+ */
+export function shuffleQueue(guildId) {
+  const state = getGuildState(guildId);
+  if (!state || state.queue.length <= 1) return false;
+
+  const musicItems = state.queue.filter(i => i.type === 'music');
+  const otherItems = state.queue.filter(i => i.type !== 'music');
+
+  // Fisher-Yates shuffle for music items
+  for (let i = musicItems.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [musicItems[i], musicItems[j]] = [musicItems[j], musicItems[i]];
+  }
+
+  state.queue = [...musicItems, ...otherItems];
+  return true;
+}
+
+/**
  * Returns true if the bot is currently connected to voice in this guild.
  * @param {string} guildId
  */
@@ -579,10 +621,12 @@ async function processQueue(guildId) {
 
       const ffmpeg = spawn(ffmpegPath, [
         '-i', 'pipe:0',
-        '-af', `volume=${kVolume}`,
-        '-f', 's16le',
-        '-ar', '48000',
-        '-ac', '2',
+        '-af', `volume=${kVolume},aresample=48000`,
+        '-c:a', 'libopus',
+        '-b:a', '128k',
+        '-vbr', 'on',
+        '-f', 'opus',
+        '-threads', '1',
         'pipe:1'
       ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 
@@ -651,7 +695,7 @@ async function processQueue(guildId) {
       };
 
       const resource = createAudioResource(ffmpeg.stdout, {
-        inputType: StreamType.Raw,
+        inputType: StreamType.OggOpus,
         inlineVolume: false 
       });
       console.log(`[Player] Music resource created. StreamType: Raw, InlineVolume: false`);
@@ -677,11 +721,12 @@ async function processTtsQueue(guildId) {
 
   try {
     const { text, streamPromise } = item;
+    const userLabel = item.userName || item.userId || 'System';
+    console.log(`[G:${guildId}] [TTS] Starting processing for "${userLabel}": ${text.slice(0, 30)}${text.length > 30 ? '...' : ''}`);
+
     const audioStream = await streamPromise;
     if (!audioStream) throw new Error('Audio synthesis failed or was pre-emptively aborted');
-
-    const userLabel = item.userName || item.userId || 'System';
-    // Redundant Speaking log removed as TTS log in index.js handles this
+    console.log(`[G:${guildId}] [TTS] Audio stream received, starting ffmpeg...`);
 
     const cfg = getFullGuildConfig(guildId).settings;
     const ttsVolume = cfg.volume ?? 1.0;
@@ -689,10 +734,12 @@ async function processTtsQueue(guildId) {
     const ffmpeg = spawn(ffmpegPath, [
       '-f', 'wav',
       '-i', 'pipe:0',
-      '-af', `volume=${ttsVolume}`,
-      '-f', 's16le',
-      '-ar', '48000',
-      '-ac', '2',
+      '-af', `volume=${ttsVolume},aresample=48000`,
+      '-c:a', 'libopus',
+      '-b:a', '128k',
+      '-vbr', 'on',
+      '-f', 'opus',
+      '-threads', '1',
       'pipe:1'
     ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 
@@ -706,7 +753,7 @@ async function processTtsQueue(guildId) {
     });
 
     const resource = createAudioResource(ffmpeg.stdout, {
-      inputType: StreamType.Raw,
+      inputType: StreamType.OggOpus,
       inlineVolume: false,
     });
     state.ttsPlayer.play(resource);
@@ -724,6 +771,26 @@ function formatDuration(ms) {
   return `${m}:${s}`;
 }
 
+function createProgressBar(currentMs, totalDurationStr) {
+  const parts = totalDurationStr.split(':');
+  let totalSeconds = 0;
+  if (parts.length === 2) {
+    totalSeconds = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+  } else if (parts.length === 3) {
+    totalSeconds = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+  }
+  
+  if (totalSeconds === 0) return '▬▬▬🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
+  
+  const currentSeconds = Math.floor(currentMs / 1000);
+  const percent = Math.min(currentSeconds / totalSeconds, 1);
+  const barSize = 15;
+  const progress = Math.round(barSize * percent);
+  const empty = Math.max(barSize - progress, 0);
+  
+  return '▬'.repeat(progress) + '🔘' + '▬'.repeat(empty);
+}
+
 async function sendNowPlayingEmbed(guildId, song, resource) {
   const state = guilds.get(guildId);
   if (!state || !discordClient) return;
@@ -737,29 +804,47 @@ async function sendNowPlayingEmbed(guildId, song, resource) {
   clearNowPlaying(guildId);
 
   const embed = new EmbedBuilder()
-    .setColor('#42A5F5')
-    .setTitle('🎶 再生中')
-    .setDescription(`**[${song.title}](${song.url})**\n⏰ \`0:00 / ${song.duration}\``);
+    .setColor('#FFCC00') // Premium Orange/Yellow
+    .setTitle('🎶 Now Playing')
+    .setThumbnail(song.thumbnail)
+    .setDescription(`**[${song.title}](${song.url})**\n\n${createProgressBar(0, song.duration)}\n\`0:00 / ${song.duration}\``);
 
-  if (song.artist) embed.addFields({ name: '🎤 アーティスト', value: song.artist, inline: true });
+  if (song.artist) embed.addFields({ name: '🎤 Artist', value: song.artist, inline: true });
+  embed.addFields({ name: '👤 Requested by', value: `<@${song.userId}>`, inline: true });
+  embed.addFields({ name: '📍 Location', value: `<#${cfg.voiceChannelId}>`, inline: true });
 
-  const row = new ActionRowBuilder().addComponents(
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('music_lyrics')
+      .setLabel('🎶 Lyrics')
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId('music_pause')
-      .setLabel('⏯️ 再生/一時停止')
+      .setLabel('⏯️ Pause/Play')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId('music_skip')
-      .setLabel('⏭️ スキップ')
+      .setLabel('⏭️ Skip')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('music_loop')
+      .setLabel('🔁 Loop')
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('music_shuffle')
+      .setLabel('🔀 Shuffle')
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId('music_stop')
-      .setLabel('⏹️ 停止')
+      .setLabel('❌ Stop')
       .setStyle(ButtonStyle.Danger)
   );
 
   try {
-    const msg = await channel.send({ embeds: [embed], components: [row] });
+    const msg = await channel.send({ embeds: [embed], components: [row1, row2] });
     state.nowPlayingMessage = msg;
 
     state.nowPlayingInterval = setInterval(() => {
@@ -773,8 +858,11 @@ async function sendNowPlayingEmbed(guildId, song, resource) {
         return;
       }
 
-      const elapsed = formatDuration(resource.playbackDuration);
-      const newEmbed = EmbedBuilder.from(embed).setDescription(`**[${song.title}](${song.url})**\n⏰ \`${elapsed} / ${song.duration}\``);
+      const currentMs = resource.playbackDuration;
+      const elapsed = formatDuration(currentMs);
+      const progressBar = createProgressBar(currentMs, song.duration);
+      
+      const newEmbed = EmbedBuilder.from(embed).setDescription(`**[${song.title}](${song.url})**\n\n${progressBar}\n\`${elapsed} / ${song.duration}\``);
       
       msg.edit({ embeds: [newEmbed] }).catch(() => {
         clearInterval(state.nowPlayingInterval);
@@ -815,5 +903,10 @@ export function stopMusic(guildId) {
   state.queue = [];
   state.loopMode = 'off';
   return skipMusic(guildId);
+}
+
+export function getNowPlayingMessageId(guildId) {
+  const state = guilds.get(guildId);
+  return state?.nowPlayingMessage?.id || null;
 }
 

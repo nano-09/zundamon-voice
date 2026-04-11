@@ -32,7 +32,15 @@ namespace ZundamonInstaller
             {
                 ErrorExit("Gitがインストールされていません。 https://git-scm.com/ からインストールしてください。");
             }
-            Console.WriteLine("OK: Node.js と Git がインストールされています。\n");
+            Console.WriteLine("OK: Node.js と Git がインストールされています。");
+
+            Console.WriteLine("\n[?] VOICEVOX はインストールされていますか？");
+            Console.WriteLine("このボットを動かすには VOICEVOX (アプリ) が必要です。");
+            Console.WriteLine("まだインストールしていない場合は、以下のリンクからダウンロードして実行してください：");
+            Console.WriteLine("👉 https://voicevox.hiroshiba.jp/");
+            Console.Write("準備ができたら Enter キーを押してください...");
+            Console.ReadLine();
+            Console.WriteLine();
 
             // 2. ディレクトリの選択とクローン
             Console.WriteLine("[2/4] インストール先のフォルダを指定してください。");
@@ -191,17 +199,30 @@ CREATE TABLE IF NOT EXISTS user_presets (
     UNIQUE(user_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS music_lyrics (
+    video_url TEXT PRIMARY KEY,
+    lyrics TEXT,
+    source TEXT,
+    found BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- RLS (Row Level Security) の有効化
 ALTER TABLE guild_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_analytics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs_v2 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_presets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE music_lyrics ENABLE ROW LEVEL SECURITY;
 
 -- 簡易的なポリシー作成 (ボット/ダッシュボード用)
 DO $$ 
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'user_presets') THEN
         CREATE POLICY ""Allow all access"" ON public.user_presets FOR ALL USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'music_lyrics') THEN
+        CREATE POLICY ""Allow all access"" ON public.music_lyrics FOR ALL USING (true);
     END IF;
 END $$;
 --------------------------------------------------");
@@ -509,7 +530,7 @@ END $$;
         {
             try
             {
-                string[] tables = { "guild_configs", "guild_analytics", "logs_v2", "user_presets" };
+                string[] tables = { "guild_configs", "guild_analytics", "logs_v2", "user_presets", "music_lyrics" };
                 foreach (var table in tables)
                 {
                     // Use powershell to check table existence via PostgREST

@@ -1,10 +1,10 @@
 // src/commands.js
 // Defines all slash command handlers
 
-import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder } from 'discord.js';
-import { joinChannel, leaveChannel, isConnected, enqueue, pauseMusic, skipMusic, enqueueMusic, getQueue, setLoopMode, subscribeToMusic } from './player.js';
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { joinChannel, leaveChannel, isConnected, enqueue, pauseMusic, skipMusic, enqueueMusic, getQueue, setLoopMode, subscribeToMusic, getNowPlayingMessageId } from './player.js';
 import { getGuildConfig, setGuildConfig, updateGuildMeta, getFullGuildConfig } from './config.js';
-import { isGuildAuthorized, isGuildBlocked } from './auth.js';
+import { isGuildAuthorized, isGuildBlocked, isBotLocked } from './auth.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -15,6 +15,7 @@ import ytSearch from 'yt-search';
 import supabase, { logToSupabase, getUserPresets, saveUserPreset, deleteUserPreset } from './db_supabase.js';
 import { incrementCommand, incrementCounter } from './stats.js';
 import { DEFAULT_PERMISSIONS } from './constants.js';
+import { fetchLyrics } from './lyrics_utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,8 +66,8 @@ export const commandDefinitions = [
 
   new SlashCommandBuilder()
     .setName('play')
-    .setDescription('YouTubeやSpotifyから音楽を再生します（カラオケモード中のみ）')
-    .addStringOption((opt) => opt.setName('query').setDescription('曲のURLまたは検索キーワード').setRequired(true)),
+    .setDescription('YouTubeから音楽を再生します（キーワード検索対応、カラオケモード中のみ）')
+    .addStringOption((opt) => opt.setName('query').setDescription('YouTubeのURLまたは検索ワード').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('pause')
@@ -225,7 +226,7 @@ const ALL_COMMAND_NAMES = [
   'set-server', 'set-server voice', 'set-server speed', 'set-server pitch', 'set-server volume',
   'customsound add', 'customsound remove', 'customsound list',
   'customemoji add', 'customemoji remove', 'customemoji list', 'loop',
-  'preset save', 'preset load', 'preset list'
+  'preset', 'preset save', 'preset load', 'preset list'
 ];
 
 const VOICES_LIST = [
@@ -391,6 +392,14 @@ export async function handleCommand(interaction) {
     if (subcommand) fullCommandPath = `${commandName} ${subcommand}`;
   } catch (e) { }
 
+  // ── Global Bot Lock check ──────────────────────────────────
+  if (isBotLocked()) {
+    return interaction.reply({
+      content: '🔓 ボットは現在、保守またはオーナーによる操作のため **グローバルロック** されているのだ。解除されるまでお待ちくださいなのだ。',
+      flags: [MessageFlags.Ephemeral],
+    });
+  }
+
   // ── 2FA Auth check ──────────────────────────────────────────
   if (!isGuildAuthorized(guild.id)) {
     logToSupabase(guild.id, 'cmd', `[CMD] User: ${interaction.user.username}, Command: /${fullCommandPath}, Status: Denied (Unauthorized/2FA)`);
@@ -537,7 +546,7 @@ export async function handleCommand(interaction) {
       const vName = voiceInfo ? voiceInfo.name : '不明な話者';
 
       return interaction.reply({
-        content: `💾 現在の設定をグローバルプリセット **${presetName}** として保存したのだ！\nどのサーバーでも使用できるのだ。\n・話者: ${vName}\n・速度: ${speed}\n・ピッチ: ${pitch}\n・音量: ${volume}`,
+        content: `💾 プリセット **${presetName}** を保存したのだ！ (${vName} / 速度:${speed} / ﾋﾟｯﾁ:${pitch} / 音量:${volume})`,
         flags: [MessageFlags.Ephemeral]
       });
     }
@@ -689,20 +698,23 @@ export async function handleCommand(interaction) {
     const userId = interaction.user.id;
 
     // User voice ID
-    const voiceId = cfg.userVoices?.[userId];
+    const voiceId = cfg.userVoices?.[userId] ?? cfg.speakerId ?? 3;
+    const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(voiceId));
+    const vName = voiceInfo ? voiceInfo.name : `ID: ${voiceId}`;
+
     // User params
     const myParams = cfg.userParams?.[userId] || {};
 
     const embed = new EmbedBuilder()
       .setColor('#81C784')
       .setAuthor({ name: interaction.user.username, iconURL: interaction.user.displayAvatarURL() })
-      .setTitle('🎤 あなたの声設定なのだ')
-      .setDescription('サーバー設定よりも、`/set` で設定した以下の内容が優先されますのだ！')
+      .setTitle('🎤 あなたの声設定')
+      .setDescription('`/set` で個別に設定した内容は、サーバー設定より優先されるのだ！')
       .addFields(
-        { name: '🔊 話者ID', value: `${voiceId !== undefined ? voiceId : `デフォルト (${cfg.speakerId ?? 3})`}`, inline: true },
-        { name: '⚡ 速度 (Speed)', value: `${myParams.speed ?? cfg.speed ?? 1.0}${myParams.speed !== undefined ? '' : ' *(鯖デフォ)*'}`, inline: true },
-        { name: '🎵 ピッチ (Pitch)', value: `${myParams.pitch ?? cfg.pitch ?? 0.0}${myParams.pitch !== undefined ? '' : ' *(鯖デフォ)*'}`, inline: true },
-        { name: '🔈 音量 (Volume)', value: `${myParams.volume ?? cfg.volume ?? 1.0}${myParams.volume !== undefined ? '' : ' *(鯖デフォ)*'}`, inline: true }
+        { name: '🎙️ 話者', value: `\`${vName}\`${cfg.userVoices?.[userId] !== undefined ? '' : ' (鯖デフォ)'}`, inline: true },
+        { name: '⚡ 速度', value: `\`${myParams.speed ?? cfg.speed ?? 1.0}\`${myParams.speed !== undefined ? '' : ' (鯖デフォ)'}`, inline: true },
+        { name: '🎵 ピッチ', value: `\`${myParams.pitch ?? cfg.pitch ?? 0.0}\`${myParams.pitch !== undefined ? '' : ' (鯖デフォ)'}`, inline: true },
+        { name: '🔈 音量', value: `\`${myParams.volume ?? cfg.volume ?? 1.0}\`${myParams.volume !== undefined ? '' : ' (鯖デフォ)'}`, inline: true }
       );
 
     return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
@@ -886,56 +898,63 @@ export async function handleCommand(interaction) {
       {
         name: '🎮 基本操作',
         commands: [
-          { cmd: 'vc', desc: 'ボイスチャンネルに参加・退出・移動' },
-          { cmd: 'setchannel', desc: '読み上げ対象のテキストチャンネルを指定' },
-          { cmd: 'serverstatus', desc: 'サーバー設定と接続状態を確認' },
-          { cmd: 'mystatus', desc: 'あなたの現在の声設定を確認' },
-          { cmd: 'help', desc: 'このヘルプを表示' }
+          { cmd: 'vc', desc: '参加・退出・移動' },
+          { cmd: 'help', desc: 'ヘルプを表示' },
         ]
       },
       {
-        name: '🔊 声の設定',
+        name: '🔊 声の設定 (個人)',
         commands: [
-          { cmd: 'set voice', desc: '自分専用の声を話者IDで指定' },
-          { cmd: 'set speed', desc: '自分の読み上げ速度を設定' },
-          { cmd: 'set pitch', desc: '自分の読み上げピッチを設定' },
-          { cmd: 'set volume', desc: '自分の読み上げ音量を設定' },
-          { cmd: 'readname', desc: '発言者の名前読み上げ (オン/オフ)' },
-          { cmd: 'announce', desc: '入退室読み上げ (オン/オフ)' },
-          { cmd: 'trim', desc: '読み上げ最大文字数を設定' },
-          { cmd: 'preset save', desc: '現在の声設定を保存 (全サーバー共通)' },
-          { cmd: 'preset load', desc: '保存した声設定を読み込み' },
-          { cmd: 'preset list', desc: '保存済み設定の一覧を表示' },
-          { cmd: 'customsound add', desc: 'キーワードに反応するSEを追加' },
-          { cmd: 'customsound remove', desc: 'キーワード反応SEを削除' },
-          { cmd: 'customsound list', desc: '登録済みSEの一覧を表示' },
-          { cmd: 'customemoji add', desc: '絵文字の読み方を辞書に追加' },
-          { cmd: 'customemoji remove', desc: '絵文字の読み方を辞書から削除' },
-          { cmd: 'customemoji list', desc: '登録済み絵文字辞書の一覧を表示' },
-          { cmd: 'soundboard', desc: 'サウンドボード反応モード (オン/オフ)' }
+          { cmd: 'set voice', desc: '声の種類(ID)を設定' },
+          { cmd: 'set speed', desc: '話す速度を設定' },
+          { cmd: 'set pitch', desc: '声の低さを設定' },
+          { cmd: 'set volume', desc: '声の大きさを設定' },
+          { cmd: 'mystatus', desc: '自分の設定を確認' },
+        ]
+      },
+      {
+        name: '🏷️ プリセット管理',
+        commands: [
+          { cmd: 'preset save', desc: '全鯖共通で設定を保存' },
+          { cmd: 'preset load', desc: '保存設定を読込・適用' },
+          { cmd: 'preset list', desc: '保存設定の一覧を表示' },
+        ]
+      },
+      {
+        name: '🎙️ サウンド & 絵文字',
+        commands: [
+          { cmd: 'customsound add', desc: 'キーワード反応SE追加' },
+          { cmd: 'customsound remove', desc: 'キーワード反応SE削除' },
+          { cmd: 'customsound list', desc: '登録済みSE一覧を表示' },
+          { cmd: 'customemoji add', desc: '絵文字の読みを辞書追加' },
+          { cmd: 'customemoji remove', desc: '絵文字の読みを辞書削除' },
+          { cmd: 'customemoji list', desc: '登録済み絵文字辞書表示' },
+          { cmd: 'soundboard', desc: 'サウンドボード(ON/OFF)' },
         ]
       },
       {
         name: '🌐 サーバー設定 (管理者用)',
         commands: [
-          { cmd: 'set-server voice', desc: 'サーバー全体のデフォルト話者を指定' },
-          { cmd: 'set-server speed', desc: 'サーバー全体のデフォルト速度を設定' },
-          { cmd: 'set-server pitch', desc: 'サーバー全体のデフォルトピッチを設定' },
-          { cmd: 'set-server volume', desc: 'サーバー全体のデフォルト音量を設定' },
-          { cmd: 'permissions', desc: 'コマンド使用権限を管理' },
-          { cmd: 'cleanchat', desc: 'メッセージを定期自動削除' }
+          { cmd: 'setchannel', desc: '読み上げチャンネル指定' },
+          { cmd: 'set-server voice', desc: '鯖デフォ話者を指定' },
+          { cmd: 'readname', desc: '名前読み上げの設定' },
+          { cmd: 'announce', desc: '入退室読み上げの設定' },
+          { cmd: 'trim', desc: '最大文字数の設定' },
+          { cmd: 'permissions', desc: '使用権限(ロール)管理' },
+          { cmd: 'cleanchat', desc: 'メッセージ自動削除設定' },
+          { cmd: 'serverstatus', desc: '現在のサーバー設定を表示' },
         ]
       },
       {
         name: '🎵 音楽再生',
         commands: [
           { cmd: 'play', desc: 'YouTubeから曲を再生' },
-          { cmd: 'pause', desc: '音楽の一時停止 / 再開' },
+          { cmd: 'pause', desc: '一時停止 / 再開' },
           { cmd: 'skip', desc: '現在の曲をスキップ' },
-          { cmd: 'queue', desc: '再生中・待機中の曲リスト' },
+          { cmd: 'queue', desc: '再生待ちリストを表示' },
           { cmd: 'loop', desc: 'ループ再生を設定' },
-          { cmd: 'lyrics', desc: '再生中の曲の歌詞を表示' },
-          { cmd: 'musicvolume', desc: 'BGM音量を設定' }
+          { cmd: 'lyrics', desc: '曲の歌詞を表示' },
+          { cmd: 'musicvolume', desc: '再生音量を設定' },
         ]
       }
     ];
@@ -1077,196 +1096,37 @@ export async function handleCommand(interaction) {
 
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
     try {
-      // 1. Initial metadata from yt-dlp if available
-      let track = q.current.track;
-      let artist = q.current.artist;
-      let cleanTitle = q.current.title;
-
-      let partA = null;
-      let partB = null;
-
-      // 2. Refined cleaning logic for fallback
-      const quoteMatch = cleanTitle.match(/[「『](.+?)[」』]/);
-      if (quoteMatch && quoteMatch[1]) {
-        track = track || quoteMatch[1];
-        if (!artist) {
-          const splitParts = cleanTitle.split(/[「『」』]/);
-          const potentialArtist = splitParts[0].trim() || splitParts[2]?.trim();
-          if (potentialArtist && potentialArtist.length > 1) artist = potentialArtist;
-        }
-      }
-
-      let tempTrack = cleanTitle
-        .replace(/\[.*?\]|\(.*?\)|【.*?】/g, ' ')
-        .replace(/Music Video|Official\s*(Video|Audio|Music Video)?|MV|ft\.|feat\.|Lyric Video/gi, ' ')
-        .replace(/歌ってみた|を歌ってみた|cover(ed by| by)?|弾いてみた|叩いてみた|off vocal|instrumental|inst|Remix/gi, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      if (!track && !artist) {
-        const delimiters = [/\s*-\s*/, /\s*—\s*/, /\s*\/\s*/, /\s*／\s*/, /\s*\|\s*/, /\s*｜\s*/, /\s*:\s*/];
-        for (const delim of delimiters) {
-          if (tempTrack.match(delim)) {
-            const parts = tempTrack.split(delim).filter(p => p.trim().length > 0);
-            if (parts.length >= 2) {
-              partA = parts[0].trim();
-              partB = parts[1].trim();
-              break; 
-            }
-          }
-        }
-      }
-
-      if (!track && !partA) {
-        track = tempTrack;
-      }
-
-      let lyrics = null;
-      let source = 'YouTube Description';
-
-      // 3. Step 1: YouTube Description Primary Source
-      try {
-        const videoId = getYouTubeId(q.current.url);
-        if (videoId) {
-          console.log(`[Lyrics] Checking YouTube description via yt-search for: ${videoId}`);
-          const info = await ytSearch({ videoId });
-          const desc = info.description;
-          if (desc) {
-            const markers = [/歌詞[:：\n]/i, /Lyrics?[:：\n]/i, /Words[:：\n]/i, /【歌詞】/, /■歌詞/];
-            let bestLyrics = null;
-            
-            for (const marker of markers) {
-              const parts = desc.split(marker);
-              if (parts.length > 1) {
-                const lines = parts[1].trim().split('\n');
-                const resultLines = [];
-                const creditRegex = /^[^:：\n]{2,25}[:：]\s*.+$/; // Label: Value
-                const stopKeywords = ['Background', 'Chorus', 'Shouts', 'Music', 'Compose', 'Arrange', 'Mix', 'Illust', 'Movie', 'Vocal', 'Artist', 'Video', 'Credit', 'Track', 'Album', 'Recorded'];
-
-                for (let line of lines) {
-                  let trimmed = line.trim();
-                  // Skip empty lines or standard lyric brackets
-                  if (!trimmed) {
-                    resultLines.push('');
-                    continue;
-                  }
-                  
-                  // Stop on markers/socials
-                  if (trimmed.includes('http') || trimmed.includes('@')) break;
-                  
-                  let isCredit = false;
-                  const tLower = trimmed.toLowerCase();
-                  for (const kw of stopKeywords) {
-                    if (tLower.includes(kw.toLowerCase()) && (trimmed.includes(':') || trimmed.includes('：'))) {
-                      isCredit = true;
-                      break;
-                    }
-                  }
-                  
-                  // Heuristic for "Label: Value" credit lines
-                  if (!isCredit && creditRegex.test(trimmed) && !trimmed.startsWith('[') && !trimmed.endsWith(']')) {
-                    if (trimmed.length < 120) isCredit = true;
-                  }
-
-                  if (isCredit) break;
-                  resultLines.push(line);
-                }
-                
-                const potential = resultLines.join('\n').trim();
-                if (potential.length > 50) {
-                  bestLyrics = potential;
-                  break;
-                }
-              }
-            }
-            
-            // Removed enhanced block detection fallback because it incorrectly flagged long paragraphs of video credits (e.g. background chorus credits) as lyrics.
-            if (bestLyrics && bestLyrics.length > 100) {
-              lyrics = bestLyrics;
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[Lyrics] YouTube description fetch failed:', e.message);
-      }
-
-      // 4. Step 2: LRCLIB Fallback (Multi-step Search)
-      if (!lyrics) {
-        source = 'LRCLIB';
-        
-        const looseMatch = (str1, str2) => {
-          if (!str1 || !str2) return false;
-          const s1 = str1.replace(/\(.*?\)|\[.*?\]|【.*?】|「.*?」|『.*?』/g, '').trim().toLowerCase();
-          const s2 = str2.replace(/\(.*?\)|\[.*?\]|【.*?】|「.*?」|『.*?』/g, '').trim().toLowerCase();
-          if (!s1 || !s2) return false;
-          return s1 === s2 || s1.includes(s2) || s2.includes(s1);
-        };
-
-        const searchLrclib = async (query, tA, tB, exactTrack, exactArtist) => {
-          if (!query) return null;
-          try {
-            const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`);
-            const data = await res.json();
-            
-            if (data && data.length > 0) {
-              for (let i = 0; i < Math.min(data.length, 5); i++) {
-                const resName = data[i].name;
-                const resArtist = data[i].artistName;
-                let isMatch = false;
-
-                if (exactTrack || exactArtist) {
-                   const trackMatch = exactTrack ? looseMatch(resName, exactTrack) : true;
-                   const artistMatch = exactArtist ? looseMatch(resArtist, exactArtist) || looseMatch(resName, exactArtist) : true;
-                   isMatch = (trackMatch && artistMatch);
-                } else if (tA && tB) {
-                   const matchOrder1 = looseMatch(resName, tA) && looseMatch(resArtist, tB);
-                   const matchOrder2 = looseMatch(resName, tB) && looseMatch(resArtist, tA);
-                   isMatch = (matchOrder1 || matchOrder2);
-                } else {
-                   isMatch = looseMatch(resName, query); 
-                }
-
-                if (isMatch && (data[i].plainLyrics || data[i].syncedLyrics)) {
-                  return data[i].plainLyrics || data[i].syncedLyrics.replace(/\[\d+:\d+\.\d+\]/g, '').trim();
-                }
-              }
-            }
-          } catch (e) {
-            console.warn(`[Lyrics] LRCLIB search failed for "${query}":`, e.message);
-          }
-          return null;
-        };
-
-        const queries = [];
-        if (artist && track) queries.push({ q: `${artist} ${track}`, t: track, a: artist });
-        if (partA && partB) {
-          queries.push({ q: `${partA} ${partB}`, pA: partA, pB: partB });
-          queries.push({ q: `${partB} ${partA}`, pA: partA, pB: partB });
-        }
-        if (artist && track) queries.push({ q: track, t: track, a: artist });
-        if (partA) queries.push({ q: partA, pA: partA });
-        if (partB) queries.push({ q: partB, pA: partB });
-        queries.push({ q: tempTrack || cleanTitle });
-
-        for (const qObj of queries) {
-          lyrics = await searchLrclib(qObj.q, qObj.pA, qObj.pB, qObj.t, qObj.a);
-          if (lyrics) break;
-        }
-      }
+      const result = await fetchLyrics(q.current);
+      let lyrics = result.lyrics;
+      const source = result.source;
 
       if (!lyrics) {
+        if (result.cooldown) {
+          return interaction.editReply(`❌ この曲の歌詞は見つからなかったのだ。再試行まであと **${result.daysLeft}日** 待ってほしいのだ。`);
+        }
         return interaction.editReply(`❌ 歌詞データベースおよび動画説明文に見つからなかったのだ。申し訳ないのだ。`);
       }
 
-      // Format and send
+      // Format
       const footer = `\n\n*(Source: ${source})*`;
       if (lyrics.length > (1900 - footer.length)) {
         lyrics = lyrics.substring(0, 1800) + '...';
       }
 
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('lyrics_correct')
+          .setLabel('✅ 正しい')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId('lyrics_incorrect')
+          .setLabel('❌ 間違っている')
+          .setStyle(ButtonStyle.Danger)
+      );
+
       return interaction.editReply({
         content: `🎶 **${q.current.title}** の歌詞なのだ:\n\n${lyrics}${footer}`,
-        flags: [MessageFlags.Ephemeral]
+        components: [row]
       });
     } catch (err) {
       console.error('[Lyrics] General Error:', err);
@@ -1419,8 +1279,10 @@ export function startCleanChatTimer(client, guildId, channelId, intervalMs) {
     clearInterval(cleanTimers.get(timerKey));
   }
 
-  const cleanFn = async () => {
+  const intervalId = setInterval(async () => {
     try {
+      if (isBotLocked() || isGuildBlocked(guildId)) return; // Skip while locked or blocked
+
       const channel = client.channels.cache.get(channelId);
       if (!channel) return;
 
@@ -1432,7 +1294,27 @@ export function startCleanChatTimer(client, guildId, channelId, intervalMs) {
 
       const messages = await channel.messages.fetch({ limit: 100 });
       const cutoff = Date.now() - intervalMs;
-      const oldMessages = messages.filter(m => m.createdTimestamp < cutoff);
+      
+      const q = getQueue(guildId);
+      const isMusicPlaying = q && (q.current || q.upcoming.length > 0);
+      const activeNowPlayingId = getNowPlayingMessageId(guildId);
+
+      const oldMessages = messages.filter(m => {
+        if (m.createdTimestamp >= cutoff) return false;
+        
+        // Protect currently playing song message
+        if (isMusicPlaying) {
+          if (m.id === activeNowPlayingId) return false;
+          
+          // Protect any message that looks like a Now Playing embed while music is active
+          // to satisfy "only delete when there is no songs in queue"
+          if (m.author.id === client.user.id && m.embeds?.[0]?.title === '🎶 Now Playing') {
+            return false;
+          }
+        }
+        
+        return true;
+      });
 
       if (oldMessages.size === 0) return;
 

@@ -461,6 +461,68 @@ body {
   border-color: var(--accent);
 }
 
+/* New Graph Controls */
+.graph-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.control-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.interval-input-group {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  height: 30px;
+}
+
+.interval-input-group input {
+  width: 50px;
+  background: none;
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  outline: none;
+  text-align: center;
+}
+
+.interval-input-group select {
+  background: none;
+  border: none;
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  outline: none;
+  cursor: pointer;
+}
+
+.interval-input-group input:focus {
+  background: #fff;
+}
+
+
 /* Ping footer */
 .ping-footer {
   display: flex;
@@ -2244,3 +2306,20 @@ body {
   color: #fff;
   border-color: var(--accent);
 }
+/* ????? SECURITY UI ????? */
+.otp-modal-card { max-width: 320px !important; }
+.otp-input-wrap { display: flex; justify-content: center; padding: 20px 0; }
+.otp-input { width: 100%; max-width: 200px; height: 50px; text-align: center; font-size: 28px; font-weight: 800; letter-spacing: 8px; border: 2px solid var(--border); border-radius: 12px; outline: none; font-family: var(--mono); color: var(--accent); }
+.otp-input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(67, 24, 255, 0.1); }
+.otp-error { color: var(--danger); font-size: 13px; font-weight: 700; text-align: center; margin-top: 5px; }
+
+.lock-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(26, 31, 94, 0.95); backdrop-filter: blur(8px); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.lock-card { background: var(--surface); border-radius: 30px; padding: 40px; max-width: 400px; width: 90%; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.3); animation: lockIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+@keyframes lockIn { from { transform: scale(0.9) translateY(20px); opacity: 0; } to { transform: scale(1) translateY(0); opacity: 1; } }
+.lock-icon { font-size: 60px; margin-bottom: 20px; }
+.lock-card h1 { font-size: 22px; font-weight: 800; color: var(--text); margin-bottom: 12px; }
+.lock-card p { font-size: 14px; color: var(--text-muted); line-height: 1.6; margin-bottom: 30px; }
+.lock-form { display: flex; flex-direction: column; gap: 12px; }
+.lock-form input { height: 50px; border-radius: 12px; border: 2px solid var(--border); padding: 0 16px; font-size: 24px; font-weight: 800; text-align: center; letter-spacing: 4px; font-family: var(--mono); outline: none; }
+.lock-form input:focus { border-color: var(--accent); }
+

@@ -274,10 +274,26 @@
                   <div class="card chart-card-sm">
                     <div class="card-head">
                       <h2>アクティビティ推移</h2>
-                      <div class="chip-row" id="graph-range-picker">
-                        <div class="chip active" data-range="24h">24時間</div>
-                        <div class="chip" data-range="7d">7日間</div>
-                        <div class="chip" data-range="30d">30日間</div>
+                      <div class="graph-header-controls">
+                        <div class="control-group">
+                          <span class="control-label">期間:</span>
+                          <div class="chip-row" id="graph-range-picker">
+                            <div class="chip active" data-range="24h">24時間</div>
+                            <div class="chip" data-range="7d">7日間</div>
+                            <div class="chip" data-range="30d">30日間</div>
+                          </div>
+                        </div>
+                        <div class="control-group">
+                          <span class="control-label">グループ化:</span>
+                          <div class="interval-input-group">
+                            <input type="number" id="graph-interval-value" value="1" min="1">
+                            <select id="graph-interval-unit">
+                              <option value="m">分</option>
+                              <option value="h" selected>時間</option>
+                              <option value="d">日</option>
+                            </select>
+                          </div>
+                        </div>
                       </div>
                     </div>
                     <div class="chart-wrap"><canvas id="activityChart"></canvas></div>
@@ -523,6 +539,41 @@
     </div>
   </div>
 
+
+  <!-- 2FA OTP Modal -->
+  <div class="modal-overlay" id="otp-modal" style="display:none">
+    <div class="modal-card otp-modal-card">
+      <div class="modal-header">
+        <h2>🔐 セキュリティ認証</h2>
+        <button class="modal-close" id="btn-close-otp">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="otp-description">この操作には認証が必要です。オーナーのメールアドレスに送信された6桁のコードを入力してください。</p>
+        <div class="otp-input-wrap">
+          <input type="text" id="otp-input" class="otp-input" placeholder="000000" maxlength="6">
+        </div>
+        <div id="otp-error" class="otp-error" style="display:none">認証コードが正しくありません。</div>
+      </div>
+      <div class="modal-footer">
+        <button class="action-btn secondary" id="btn-cancel-otp">キャンセル</button>
+        <button class="action-btn primary" id="btn-submit-otp">認証して実行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global Lock Overlay -->
+  <div class="lock-overlay" id="lock-overlay" style="display:none">
+    <div class="lock-card">
+      <div class="lock-icon">🔒</div>
+      <h1>ボットはロックされています</h1>
+      <p>セキュリティのため、グローバルロックが有効なのだ。<br>DiscordのDMまたは以下のフォームから解除コードを入力してほしいのだ。</p>
+      <div class="lock-form">
+        <input type="text" id="lock-unlock-input" placeholder="000000" maxlength="6">
+        <button id="btn-lock-unlock" class="action-btn primary">ロック解除</button>
+      </div>
+      <div id="lock-error" class="otp-error" style="display:none; margin-top: 10px;">解除コードが正しくありません。</div>
+    </div>
+  </div>
 
   <script src="script.js"></script>
 </body>

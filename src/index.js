@@ -2,18 +2,20 @@
 // Main entry point for the Zundamon Discord TTS bot
 
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Events, REST, Routes, MessageFlags, Partials } from 'discord.js';
+import { Client, GatewayIntentBits, Events, REST, Routes, MessageFlags, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { commandDefinitions, handleCommand, startCleanChatTimer } from './commands.js';
-import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel, isConnected as isBotConnected, setDiscordClient, pauseMusic, skipMusic, stopMusic } from './player.js';
+import { enqueue, leaveChannel, leaveAllChannels, enqueueFile, joinChannel, isConnected as isBotConnected, setDiscordClient, pauseMusic, skipMusic, stopMusic, shuffleQueue, setLoopMode, getQueue } from './player.js';
+import { synthesize, checkVoicevoxHealth } from './tts.js';
 import { initBotConfig, getBotConfig } from './botConfig.js';
 import { getGuildConfig, setGuildConfig, initConfigs, getFullGuildConfig, refreshConfig } from './config.js';
-import { isGuildAuthorized, isGuildBlocked, sendLocalOtp, verifyLocalOtp } from './auth.js';
-import { initGuildTable, snapshotGuildAnalytics, logToSupabase, deleteGuildConfigFromDb } from './db_supabase.js';
+import { isGuildAuthorized, isGuildBlocked, isBotLocked, setBotLocked, sendLocalOtp, verifyLocalOtp, sendGlobalOtp, verifyGlobalOtp } from './auth.js';
+import { initGuildTable, snapshotGuildAnalytics, logToSupabase, deleteGuildConfigFromDb, reportIncorrectLyrics } from './db_supabase.js';
 import fs from 'fs';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import emojiRegex from 'emoji-regex';
+import { fetchLyrics } from './lyrics_utils.js';
 
 import { getGuildCounters, incrementCounter, incrementCommand, getAllGuildCounters, getSessionCommands, getSessionTextsSpoken, getAndResetDeltas } from './stats.js';
 
@@ -151,6 +153,17 @@ client.once(Events.ClientReady, async (c) => {
 
       console.log(`   VOICEVOX: ${getBotConfig('VOICEVOX_URL') || 'http://localhost:50021'}`);
       console.log(`   スピーカー ID: ${getBotConfig('VOICEVOX_SPEAKER') || '3'} (ずんだもん)`);
+
+      // VOICEVOX Health Check
+      const isVoicevoxOk = await checkVoicevoxHealth();
+      if (!isVoicevoxOk) {
+        console.warn('==================================================================');
+        console.warn('[WARNING] VOICEVOX Engine に接続できないのだ！');
+        console.warn('ボットは起動しますが、音声合成機能（TTS）は動作しません。');
+        console.warn('VOICEVOXアプリが起動していること、ポート 50021 が開放されていることを');
+        console.warn('確認してほしいのだ。');
+        console.warn('==================================================================');
+      }
 
       const guildIds = client.guilds.cache.map(g => g.id);
       await initConfigs(guildIds);
@@ -341,6 +354,71 @@ client.on(Events.InteractionCreate, async (interaction) => {
          } else {
             await interaction.reply({ content: '停止する音楽がないのだ。', flags: [MessageFlags.Ephemeral] });
          }
+      } else if (interaction.customId === 'music_shuffle') {
+         const shuffled = shuffleQueue(guildId);
+         if (shuffled) {
+            await interaction.reply({ content: '🔀 キューをシャッフルしたのだ！', flags: [MessageFlags.Ephemeral] });
+         } else {
+            await interaction.reply({ content: 'シャッフルする曲が足りないのだ。', flags: [MessageFlags.Ephemeral] });
+         }
+      } else if (interaction.customId === 'music_loop') {
+         const queue = getQueue(guildId);
+         if (!queue) return interaction.reply({ content: '音楽が再生されていないのだ。', flags: [MessageFlags.Ephemeral] });
+         
+         const modes = ['off', 'track', 'queue'];
+         const nextMode = modes[(modes.indexOf(queue.loopMode || 'off') + 1) % modes.length];
+         setLoopMode(guildId, nextMode);
+         
+         const modeLabels = { off: 'オフ', track: '1曲リピート', queue: '全曲リピート' };
+         await interaction.reply({ content: `🔁 ループモードを **${modeLabels[nextMode]}** に変更したのだ！`, flags: [MessageFlags.Ephemeral] });
+      } else if (interaction.customId === 'music_lyrics') {
+         const queue = getQueue(guildId);
+         if (!queue || !queue.current) return interaction.reply({ content: '再生中の曲がないのだ。', flags: [MessageFlags.Ephemeral] });
+         
+         await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+                   try {
+            const result = await fetchLyrics(queue.current);
+            let lyrics = result.lyrics;
+            const source = result.source;
+
+            if (!lyrics) {
+              if (result.cooldown) {
+                return interaction.editReply(`❌ この曲の歌詞は見つからなかったのだ。再試行まであと **${result.daysLeft}日** 待ってほしいのだ。`);
+              }
+              return interaction.editReply(`❌ 歌詞が見つからなかったのだ。申し訳ないのだ。`);
+            }
+
+            const footer = `\n\n*(Source: ${source})*`;
+            if (lyrics.length > (1900 - footer.length)) {
+              lyrics = lyrics.substring(0, 1800) + '...';
+            }
+
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId('lyrics_correct').setLabel('✅ 正しい').setStyle(ButtonStyle.Success),
+              new ButtonBuilder().setCustomId('lyrics_incorrect').setLabel('❌ 間違っている').setStyle(ButtonStyle.Danger)
+            );
+
+            await interaction.editReply({
+              content: `🎶 **${queue.current.title}** の歌詞なのだ:\n\n${lyrics}${footer}`,
+              components: [row]
+            });
+          } catch (err) {
+            console.error('[LyricsInteraction]', err);
+            await interaction.editReply('❌ 歌詞の取得中にエラーが発生したのだ。');
+          }
+      } else if (interaction.customId === 'lyrics_correct') {
+        await interaction.update({ components: [] });
+        return interaction.followUp({ content: '✅ ありがとうございます！歌詞が正しいことを確認したのだ。', flags: [MessageFlags.Ephemeral] });
+      } else if (interaction.customId === 'lyrics_incorrect') {
+        const q = getQueue(interaction.guildId);
+        if (q && q.current) {
+          await reportIncorrectLyrics(q.current.url);
+          await interaction.update({ components: [] });
+          return interaction.followUp({ 
+            content: '❌ 申し訳ないのだ。この曲の歌詞を不正確としてマークしたのだ。\n新鮮な情報を探すために1週間後にまた試してみてほしいのだ。', 
+            flags: [MessageFlags.Ephemeral] 
+          });
+        }
       }
     } catch (err) {
       console.error('[ButtonInteraction]', err);
@@ -383,6 +461,16 @@ client.on(Events.MessageCreate, async (message) => {
   const code = message.content.trim();
   if (!/^\d{6}$/.test(code)) return; // Only 6-digit codes
 
+  // 1. Try Global OTP first
+  const isGlobalMatch = await verifyGlobalOtp(code);
+  if (isGlobalMatch) {
+    await message.reply('🔓 **ボットのグローバルロックを解除しました！**\nすべてのサーバーでコマンドとダッシュボード操作が再び利用可能になったのだ。');
+    console.log('[2FA] Bot globally unlocked by owner via DM.');
+    broadcastStats();
+    return;
+  }
+
+  // 2. Fallback to Guild OTP
   const result = await verifyLocalOtp(code);
   if (result) {
     await message.reply(`✅ サーバー「**${result.guildName}**」を認証しました！ボットが使用可能です。`);
@@ -457,6 +545,7 @@ export const broadcastStats = () => {
   const stats = {
     type: 'HEARTBEAT',
     status: botStatus,
+    isLocked: isBotLocked(),
     guilds: client.guilds.cache.size,
     channels: client.channels.cache.size,
     ping: wsPing,
@@ -509,6 +598,18 @@ client.on(Events.MessageCreate, async (message) => {
   // Block unauthorized guilds
   if (!isGuildAuthorized(message.guild.id)) {
     console.log(`[TTS] [DEBUG] Skipping: Guild ${message.guild.id} ("${message.guild.name}") is not authorized.`);
+    return;
+  }
+
+  // Block forbidden/banned guilds
+  if (isGuildBlocked(message.guild.id)) {
+    console.log(`[TTS] [DEBUG] Skipping: Guild ${message.guild.id} is blocked.`);
+    return;
+  }
+
+  // Check global lock
+  if (isBotLocked()) {
+    console.log(`[TTS] [DEBUG] Skipping: Bot is globally locked.`);
     return;
   }
 
@@ -669,14 +770,9 @@ function shutdown() {
   leaveAllChannels();
   client.destroy();
 
-  console.log('[SYS] Shutting down VOICEVOX...');
-  if (process.platform === 'win32') {
-    exec('taskkill /F /IM VOICEVOX.exe /T', () => {});
-    exec('taskkill /F /IM run.exe /T', () => {});
-  } else {
-    exec('pkill -f VOICEVOX', () => {});
-    exec('pkill -f run', () => {});
-  }
+  // VOICEVOX shutdown is now handled by the system ecosystem (Shutdown.exe/command)
+  // and should NOT be killed when the bot simply restarts.
+  console.log('[SYS] Note: VOICEVOX will remain running for ecosystem persistence.');
 
   setTimeout(() => process.exit(0), 1000);
 }
@@ -706,6 +802,34 @@ process.stdin.on('data', async (data) => {
   if (msg.startsWith('SYNC_CONFIG:')) {
     const guildId = msg.split(':')[1];
     await refreshConfig(guildId).catch(console.error);
+    
+    // Check if newly blocked
+    if (isGuildBlocked(guildId)) {
+      console.log(`[G:${guildId}] [SYS] Guild marked as BLOCKED. Forcing VC disconnect and session termination.`);
+      leaveChannel(guildId);
+      stopMusic(guildId);
+      // Clean chat intervals are handled in commands.js by checking isGuildBlocked on each tick
+    }
+    broadcastStats();
+  }
+  if (msg.startsWith('REQUEST_OTP:')) {
+    const action = msg.split(':')[1] || 'Dashboard Action';
+    await sendGlobalOtp(action);
+  }
+  if (msg.startsWith('SET_LOCKED:')) {
+    const locked = msg.split(':')[1] === 'true';
+    await setBotLocked(locked);
+    broadcastStats();
+  }
+  if (msg.startsWith('VERIFY_UNLOCK:')) {
+    const code = msg.split(':')[1];
+    const success = await verifyGlobalOtp(code);
+    if (success) {
+      console.log('[SYS] [AUTH_OK] Global unlock successful via dashboard.');
+      broadcastStats();
+    } else {
+      console.log('[SYS] [AUTH_FAIL] Global unlock failed via dashboard.');
+    }
   }
   if (msg.startsWith('LEAVE_GUILD:')) {
     const guildId = msg.split(':')[1];

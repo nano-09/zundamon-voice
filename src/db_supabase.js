@@ -245,4 +245,56 @@ export async function deleteUserPreset(userId, name) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// MUSIC LYRICS  — pre-fetched and cached lyrics
+// ═══════════════════════════════════════════════════════════
+export async function getLyricsFromCache(videoUrl) {
+  try {
+    const { data, error } = await supabase
+      .from('music_lyrics')
+      .select('*')
+      .eq('video_url', videoUrl)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  } catch (err) {
+    console.error(`[Supabase] getLyricsFromCache error:`, err.message);
+    return null;
+  }
+}
+
+export async function saveLyricsToCache(videoUrl, lyrics, source, found = true) {
+  try {
+    const payload = {
+      video_url: videoUrl,
+      lyrics,
+      source,
+      found,
+      updated_at: new Date().toISOString()
+    };
+    const { error } = await supabase
+      .from('music_lyrics')
+      .upsert(payload, { onConflict: 'video_url' });
+    if (error) throw error;
+  } catch (err) {
+    console.error(`[Supabase] saveLyricsToCache error:`, err.message);
+  }
+}
+
+export async function reportIncorrectLyrics(videoUrl) {
+  try {
+    const { error } = await supabase
+      .from('music_lyrics')
+      .update({
+        found: false,
+        lyrics: null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('video_url', videoUrl);
+    if (error) throw error;
+  } catch (err) {
+    console.error(`[Supabase] reportIncorrectLyrics error:`, err.message);
+  }
+}
+
 export default supabase;

@@ -16,6 +16,23 @@ export function isGuildAuthorized(guildId) {
 }
 
 /**
+ * Checks if the entire bot is globally locked.
+ * @returns {boolean}
+ */
+export function isBotLocked() {
+  const cfg = getFullGuildConfig('SYSTEM');
+  return cfg.settings?.isLocked === true;
+}
+
+/**
+ * Sets the global lock state of the bot.
+ * @param {boolean} locked 
+ */
+export async function setBotLocked(locked) {
+  await setGuildConfig('SYSTEM', { isLocked: locked });
+}
+
+/**
  * Checks if a guild has been manually blocked by the bot owner.
  * @param {string} guildId
  * @returns {boolean}
@@ -71,6 +88,68 @@ export async function sendLocalOtp(guildId, guildName) {
 }
 
 /**
+ * Generates a global 6-digit OTP code and sends it via email for sensitive dashboard actions.
+ * @param {string} actionName 
+ */
+export async function sendGlobalOtp(actionName = 'Dashboard Action') {
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+  await setGuildConfig('SYSTEM', {
+    requestedAt: Date.now(),
+    otpCode: code,
+    action: actionName
+  });
+
+  const email = getBotConfig('OWNER_EMAIL');
+  if (!email || !getBotConfig('SMTP_USER') || !getBotConfig('SMTP_PASS')) {
+    console.warn('[2FA] OWNER_EMAIL or SMTP_USER/PASS not configured. Cannot send global OTP.');
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: getBotConfig('SMTP_HOST', 'smtp.gmail.com'),
+    port: parseInt(getBotConfig('SMTP_PORT', '465'), 10),
+    secure: (getBotConfig('SMTP_PORT') === '465' || !getBotConfig('SMTP_PORT')), 
+    auth: {
+      user: getBotConfig('SMTP_USER'),
+      pass: getBotConfig('SMTP_PASS'),
+    },
+  });
+
+  try {
+    await transporter.sendMail({
+      from: `"Zundamon Bot" <${getBotConfig('SMTP_USER')}>`,
+      to: email,
+      subject: `[Zundamon] セキュリティ認証コード: ${code}`,
+      text: `「${actionName}」の実行リクエストがありました。\n\n以下の6桁の認証コードをDashboardに入力するか、DiscordのDMでボットに送信してください:\n\n${code}\n\n※このメールに心当たりがない場合は無視してください。`,
+    });
+    console.log(`[2FA] Global OTP (${code}) sent to ${email} for ${actionName}.`);
+  } catch (err) {
+    console.error('[2FA] Error sending global OTP via Nodemailer:', err.message);
+  }
+}
+
+/**
+ * Verifies a 6-digit global OTP code and unlocks the bot if it matches.
+ * @param {string} code 
+ * @returns {Promise<boolean>}
+ */
+export async function verifyGlobalOtp(code) {
+  const { data, error } = await supabase.from('guild_configs').select('settings').eq('guild_id', 'SYSTEM').single();
+  if (error || !data) return false;
+
+  const s = data.settings || {};
+  if (s.otpCode === code) {
+    await setGuildConfig('SYSTEM', {
+      isLocked: false,
+      otpCode: null
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
  * Verifies a 6-digit local OTP code.
  * @param {string} code
  * @returns {Promise<{ guildId: string, guildName: string } | null>}
@@ -115,6 +194,6 @@ export async function getPendingGuilds() {
   if (error || !data) return [];
 
   return data
-    .filter(row => row.settings?.authorized === false)
+    .filter(row => row.guild_id !== 'SYSTEM' && row.settings?.authorized === false)
     .map(row => ({ guildId: row.guild_id, guildName: row.settings.guildName }));
 }

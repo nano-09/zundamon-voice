@@ -53,6 +53,8 @@ const state = {
   },
   logCache: new Map(), // Key: "guildId:type", Value: Array
   metadataCache: {}, // { guildId: { id: { type, name, avatar, color } } }
+  isLocked: false,
+  pendingOtpAction: null, // { type: 'leave'|'block', guildId, data }
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -283,6 +285,15 @@ socket.on('stats_update', (data) => {
 
   // Sync Profiles
   updateOwnerInfo(data.owner);
+
+  // Global Lock Sync
+  if (data.isLocked !== undefined) {
+    state.isLocked = data.isLocked;
+    const lockOverlay = el('lock-overlay');
+    if (lockOverlay) {
+      lockOverlay.style.display = state.isLocked ? 'flex' : 'none';
+    }
+  }
 
   // Bot Status Pill & Top-right Pip
   const statusPill = el('bot-status-pill');
@@ -562,6 +573,82 @@ socket.on('log', (msg) => {
   }
 });
 
+// ── Security / 2FA ─────────────────────────────────────────────────────────────
+function showOtpModal(description, actionData) {
+  state.pendingOtpAction = actionData;
+  el('otp-description').textContent = description;
+  el('otp-input').value = '';
+  el('otp-error').style.display = 'none';
+  el('otp-modal').style.display = 'flex';
+  socket.emit('request_otp', { action: actionData.type });
+}
+
+el('btn-close-otp')?.addEventListener('click', () => el('otp-modal').style.display = 'none');
+el('btn-cancel-otp')?.addEventListener('click', () => el('otp-modal').style.display = 'none');
+
+el('btn-submit-otp')?.addEventListener('click', async () => {
+  const code = el('otp-input').value.trim();
+  if (code.length < 6) return;
+
+  const { type, guildId, data } = state.pendingOtpAction;
+  
+  if (type === 'leave') {
+    socket.emit('leave_guild', { guildId, code });
+    el('otp-modal').style.display = 'none';
+  } else if (type === 'block') {
+    try {
+      const res = await fetch('/api/block-guild', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guildId, blocked: true, code }),
+      });
+      if (res.status === 401) {
+        el('otp-error').textContent = '認証コードが正しくありません。';
+        el('otp-error').style.display = 'block';
+      } else if (!res.ok) throw new Error('API Error');
+      else {
+        showToast('🚫 サーバーをブロックしました。', 'ok');
+        el('otp-modal').style.display = 'none';
+        // Refresh guild status
+        const g = state.dbGuilds.find(x => x.guild_id === guildId);
+        if (g) {
+          if (!g.settings) g.settings = {};
+          g.settings.blocked = true;
+          // Refresh detail panel if open
+          if (state.selectedGuildId === guildId) {
+            const blockBtn = el('btn-block-guild');
+            blockBtn.textContent = '✅ サーバーのブロックを解除';
+            blockBtn.className = 'action-btn secondary';
+          }
+        }
+      }
+    } catch (err) {
+      showToast('❌ 操作に失敗しました。', 'error');
+    }
+  }
+});
+
+el('btn-lock-unlock')?.addEventListener('click', () => {
+  const code = el('lock-unlock-input').value.trim();
+  if (code.length < 6) return;
+  socket.emit('unlock_system', { code });
+});
+
+socket.on('unlock_result', (res) => {
+  if (res.success) {
+    el('lock-overlay').style.display = 'none';
+    el('lock-unlock-input').value = '';
+    el('lock-error').style.display = 'none';
+    showToast('🔓 ボットのロックを解除しました！', 'ok');
+  } else {
+    const errorEl = el('lock-error') || el('otp-error');
+    if (errorEl) {
+      errorEl.textContent = '解除コードが正しくありません。';
+      errorEl.style.display = 'block';
+    }
+  }
+});
+
 socket.on('metadata_resolved', (data) => {
   if (!state.metadataCache[data.guildId]) state.metadataCache[data.guildId] = {};
   Object.assign(state.metadataCache[data.guildId], data.results);
@@ -733,33 +820,33 @@ async function openGuildDetail(g) {
   updateBlockBtn();
   blockBtn.onclick = async () => {
     const isCurrentlyBlocked = g.settings?.blocked === true;
-    const newBlocked = !isCurrentlyBlocked;
-    const action = newBlocked ? 'block' : 'unblock';
-    if (!confirm(`${newBlocked ? '🚫' : '✅'} "${g.name}" を${newBlocked ? 'ブロック' : 'アンブロック'}しますか？\n${newBlocked ? 'このサーバーの全コマンドが無効化されます。' : 'このサーバーのコマンドが再び有効になります。'}`)) return;
-    try {
-      const res = await fetch('/api/block-guild', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ guildId: g.guild_id, blocked: newBlocked }),
-      });
-      if (!res.ok) throw new Error('Failed');
-      showToast(`${newBlocked ? '🚫' : '✅'} ${g.name} を${newBlocked ? 'ブロック' : 'アンブロック'}しました。`, 'ok');
-      // Update local state
-      if (!g.settings) g.settings = {};
-      g.settings.blocked = newBlocked;
-      updateBlockBtn();
-    } catch (err) {
-      showToast('❌ ブロック状態の変更に失敗しました。', 'error');
+    if (isCurrentlyBlocked) {
+      // Unblocking doesn't require OTP (as per request)
+      if (!confirm('✅ サーバーのブロックを解除しますか？')) return;
+      try {
+        const res = await fetch('/api/block-guild', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ guildId: g.guild_id, blocked: false }),
+        });
+        if (res.ok) {
+          showToast('✅ ブロックを解除しました。', 'ok');
+          g.settings.blocked = false;
+          updateBlockBtn();
+        }
+      } catch (e) { showToast('❌ 失敗しました。', 'error'); }
+    } else {
+      // Blocking requires OTP
+      showOtpModal(`🚫 "${g.name}" をブロックするには認証が必要です。`, { type: 'block', guildId: g.guild_id });
     }
   };
+
   el('btn-edit-perms').onclick = () => {
     openPermModal(g.permissions || {});
   };
+
   el('btn-leave-guild').onclick = () => {
-    if (confirm(`本当に "${g.name}" から退出しますか？\nこの操作は取り消せません。`)) {
-      socket.emit('leave_guild', { guildId: g.guild_id });
-      showToast(`🚪 "${g.name}" からの退出を要求しました…`, 'pending');
-    }
+    showOtpModal(`🚪 "${g.name}" から退出するには認証が必要です。`, { type: 'leave', guildId: g.guild_id });
   };
   el('btn-reset-perms').onclick = async () => {
     if (!confirm(`⚠️ 本当に "${g.name}" の全権限をリセットしますか？\nすべてのカスタム許可/拒否ルールが削除されます。`)) return;
@@ -907,7 +994,7 @@ let activityChartInst = null;
 let cmdChartInst = null;
 let currentActivityRange = '24h';
 
-// Range picker listener
+// Graph controls listeners
 document.querySelectorAll('#graph-range-picker .chip').forEach(chip => {
   chip.onclick = () => {
     document.querySelectorAll('#graph-range-picker .chip').forEach(c => c.classList.remove('active'));
@@ -917,18 +1004,53 @@ document.querySelectorAll('#graph-range-picker .chip').forEach(chip => {
   };
 });
 
+el('graph-interval-value')?.addEventListener('change', () => {
+  if (state.selectedGuildId) loadDetailAnalytics(state.selectedGuildId);
+});
+el('graph-interval-unit')?.addEventListener('change', () => {
+  if (state.selectedGuildId) loadDetailAnalytics(state.selectedGuildId);
+});
+
 async function loadDetailAnalytics(guildId) {
   const hoursMap = { '24h': 24, '7d': 168, '30d': 720 };
   const hrs = hoursMap[currentActivityRange] || 24;
-  const data = await safeFetch(`/api/analytics?guildId=${guildId}&hours=${hrs}`);
-  if (!Array.isArray(data)) return;
+  const rawData = await safeFetch(`/api/analytics?guildId=${guildId}&hours=${hrs}`);
+  if (!Array.isArray(rawData)) return;
 
-  // KPIs
+  // 1. Grouping Logic
+  const intVal = parseInt(el('graph-interval-value').value) || 1;
+  const intUnit = el('graph-interval-unit').value; // 'm', 'h', 'd'
+  const unitToMs = { 'm': 60000, 'h': 3600000, 'd': 86400000 };
+  const intervalMs = intVal * unitToMs[intUnit];
+
+  const groupedMap = new Map();
+  rawData.forEach(r => {
+    const t = new Date(r.snapshot_at).getTime();
+    const bucket = Math.floor(t / intervalMs) * intervalMs;
+    if (!groupedMap.has(bucket)) {
+      groupedMap.set(bucket, {
+        snapshot_at: bucket,
+        texts_spoken: 0,
+        commands_used: {},
+        members_active: 0
+      });
+    }
+    const bData = groupedMap.get(bucket);
+    bData.texts_spoken += (r.texts_spoken || 0);
+    bData.members_active = Math.max(bData.members_active, r.members_active || 0);
+    Object.entries(r.commands_used || {}).forEach(([k, v]) => {
+      bData.commands_used[k] = (bData.commands_used[k] || 0) + v;
+    });
+  });
+
+  const data = Array.from(groupedMap.values()).sort((a, b) => a.snapshot_at - b.snapshot_at);
+
+  // KPIs (Summary of ALL raw data in range, not just grouped)
   let totalTts = 0;
   let totalCmds = 0;
   let peakUsers = 0;
 
-  data.forEach(r => {
+  rawData.forEach(r => {
     totalTts += (r.texts_spoken || 0);
     peakUsers = Math.max(peakUsers, r.members_active || 0);
     Object.values(r.commands_used || {}).forEach(v => {
@@ -941,24 +1063,34 @@ async function loadDetailAnalytics(guildId) {
   el('a-users').textContent = peakUsers;
 
   // Activity line chart
-  const labels = data.map(r => new Date(r.snapshot_at).toLocaleTimeString('ja', { hour: '2-digit', minute: '2-digit' }));
+  // Activity line chart
+  const labels = data.map(r => {
+    const d = new Date(r.snapshot_at);
+    if (intUnit === 'd' || (intUnit === 'h' && intVal >= 24)) {
+      return d.toLocaleDateString('ja', { month: '2-digit', day: '2-digit' });
+    }
+    return d.toLocaleTimeString('ja', { hour: '2-digit', minute: '2-digit' });
+  });
   const ttsSeries = data.map(r => r.texts_spoken || 0);
   const cmdSeries = data.map(r => Object.values(r.commands_used || {}).reduce((s, v) => s + v, 0));
 
   if (activityChartInst) activityChartInst.destroy();
   activityChartInst = new Chart(el('activityChart'), {
-    type: 'line',
+    type: 'bar',
     data: {
       labels,
       datasets: [
-        { label: '読み上げメッセージ', data: ttsSeries, borderColor: '#4318ff', backgroundColor: '#4318ff22', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: true },
-        { label: 'コマンド', data: cmdSeries, borderColor: '#05cd99', backgroundColor: '#05cd9922', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: true },
+        { label: '読み上げメッセージ', data: ttsSeries, backgroundColor: '#4318ffcc', borderRadius: 4, barPercentage: 0.8, categoryPercentage: 0.8 },
+        { label: 'コマンド', data: cmdSeries, backgroundColor: '#05cd99cc', borderRadius: 4, barPercentage: 0.8, categoryPercentage: 0.8 },
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { position: 'top', labels: { font: { size: 11 }, boxWidth: 12 } } },
-      scales: { x: { ticks: { font: { size: 9 } } }, y: { beginAtZero: true, ticks: { font: { size: 10 } } } }
+      scales: { 
+        x: { grid: { display: false }, ticks: { font: { size: 9 } } }, 
+        y: { beginAtZero: true, ticks: { font: { size: 10 } } } 
+      }
     }
   });
 
