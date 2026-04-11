@@ -1279,7 +1279,7 @@ export function startCleanChatTimer(client, guildId, channelId, intervalMs) {
     clearInterval(cleanTimers.get(timerKey));
   }
 
-  const intervalId = setInterval(async () => {
+  const cleanFn = async () => {
     try {
       if (isBotLocked() || isGuildBlocked(guildId)) return; // Skip while locked or blocked
 

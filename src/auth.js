@@ -2,7 +2,7 @@
 // Manages 2FA server authorization via Local OTP to the bot owner's email
 
 import nodemailer from 'nodemailer';
-import { getGuildConfig, setGuildConfig } from './config.js';
+import { getGuildConfig, setGuildConfig, getFullGuildConfig } from './config.js';
 import { getBotConfig } from './botConfig.js';
 import supabase from './db_supabase.js';
 

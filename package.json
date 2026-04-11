@@ -23,5 +23,8 @@
     "socket.io": "^4.8.3",
     "youtube-dl-exec": "^3.1.4",
     "yt-search": "^2.13.1"
+  },
+  "overrides": {
+    "minimatch": "^3.1.2"
   }
 }
