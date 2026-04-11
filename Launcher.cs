@@ -31,15 +31,17 @@ class Program
         }
 
         // 1. Start Voicevox (minimized)
-        string voicevoxPath = @"F:\Voicevox\VOICEVOX.exe";
+        string voicevoxPath = FindVoicevoxPath();
         try {
-            if (File.Exists(voicevoxPath)) {
+            if (!string.IsNullOrEmpty(voicevoxPath) && File.Exists(voicevoxPath)) {
                 Process.Start(new ProcessStartInfo {
                     FileName = voicevoxPath,
                     UseShellExecute = true,
                     WindowStyle = ProcessWindowStyle.Minimized
                 });
-                Console.WriteLine("[OK] Started VOICEVOX.");
+                Console.WriteLine("[OK] Started VOICEVOX: " + voicevoxPath);
+            } else {
+                Console.WriteLine("[WARN] VOICEVOX was not found automatically. Please start it manually.");
             }
         } catch {}
 
@@ -71,5 +73,65 @@ class Program
         } else {
             Console.WriteLine("[SKIP] Dashboard is already listening on port 3000. Not opening browser again.");
         }
+    }
+
+    static string FindVoicevoxPath()
+    {
+        try
+        {
+            // 1. Check Registry (HKCU and HKLM)
+            string[] registryPaths = {
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+            };
+            Microsoft.Win32.RegistryKey[] roots = { Microsoft.Win32.Registry.CurrentUser, Microsoft.Win32.Registry.LocalMachine };
+
+            foreach (var root in roots)
+            {
+                foreach (var path in registryPaths)
+                {
+                    using (Microsoft.Win32.RegistryKey key = root.OpenSubKey(path))
+                    {
+                        if (key == null) continue;
+                        foreach (string subkeyName in key.GetSubKeyNames())
+                        {
+                            using (Microsoft.Win32.RegistryKey subkey = key.OpenSubKey(subkeyName))
+                            {
+                                if (subkey == null) continue;
+                                string displayName = subkey.GetValue("DisplayName") as string;
+                                if (displayName != null && displayName.IndexOf("VOICEVOX", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    string installDir = subkey.GetValue("InstallLocation") as string;
+                                    if (!string.IsNullOrEmpty(installDir) && File.Exists(Path.Combine(installDir, "VOICEVOX.exe")))
+                                        return Path.Combine(installDir, "VOICEVOX.exe");
+
+                                    // fallback to display icon path if install location is empty
+                                    string iconPath = subkey.GetValue("DisplayIcon") as string;
+                                    if (!string.IsNullOrEmpty(iconPath))
+                                    {
+                                        string cleanPath = iconPath.Split(',')[0].Trim('"');
+                                        if (File.Exists(cleanPath)) return cleanPath;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Check default paths
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string defaultPath = Path.Combine(localAppData, @"Programs\VOICEVOX\VOICEVOX.exe");
+            if (File.Exists(defaultPath)) return defaultPath;
+
+            // 3. Check if process is already running
+            Process[] procs = Process.GetProcessesByName("VOICEVOX");
+            if (procs.Length > 0)
+            {
+                try { return procs[0].MainModule.FileName; } catch { }
+            }
+        }
+        catch { }
+        return null;
     }
 }

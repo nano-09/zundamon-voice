@@ -34,12 +34,23 @@ namespace ZundamonInstaller
             }
             Console.WriteLine("OK: Node.js と Git がインストールされています。");
 
-            Console.WriteLine("\n[?] VOICEVOX はインストールされていますか？");
-            Console.WriteLine("このボットを動かすには VOICEVOX (アプリ) が必要です。");
-            Console.WriteLine("まだインストールしていない場合は、以下のリンクからダウンロードして実行してください：");
-            Console.WriteLine("👉 https://voicevox.hiroshiba.jp/");
-            Console.Write("準備ができたら Enter キーを押してください...");
-            Console.ReadLine();
+            string voicevoxPath = FindVoicevoxPath();
+            if (!string.IsNullOrEmpty(voicevoxPath))
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine(string.Format("✅ VOICEVOX を検出しました: {0}", voicevoxPath));
+                Console.ResetColor();
+                Console.WriteLine("準備が整いました。");
+            }
+            else
+            {
+                Console.WriteLine("\n[?] VOICEVOX はインストールされていますか？");
+                Console.WriteLine("このボットを動かすには VOICEVOX (アプリ) が必要です。");
+                Console.WriteLine("まだインストールしていない場合は、以下のリンクからダウンロードして実行してください：");
+                Console.WriteLine("👉 https://voicevox.hiroshiba.jp/");
+                Console.Write("準備ができたら Enter キーを押してください...");
+                Console.ReadLine();
+            }
             Console.WriteLine();
 
             // 2. ディレクトリの選択とクローン
@@ -162,6 +173,7 @@ CREATE TABLE IF NOT EXISTS guild_configs (
     member_count INTEGER,
     permissions JSONB,
     settings JSONB DEFAULT '{}'::jsonb,
+    status TEXT DEFAULT '待機中',
     joined_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -545,6 +557,7 @@ END $$;
         {
             try
             {
+                // Verify Tables exist
                 string[] tables = { "guild_configs", "guild_analytics", "logs_v2", "user_presets", "music_lyrics" };
                 foreach (var table in tables)
                 {
@@ -557,27 +570,107 @@ END $$;
                         key, url.TrimEnd('/'), table
                     );
 
-                    ProcessStartInfo psi = new ProcessStartInfo
-                    {
-                        FileName = "powershell",
-                        Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"" + script + "\"",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    var process = Process.Start(psi);
-                    process.WaitForExit();
-                    if (process.ExitCode != 0)
+                    if (!RunPowerShellExitCode(script))
                     {
                         Console.WriteLine(string.Format("  [検証失敗] テーブル '{0}' が見つかりません。", table));
                         return false;
                     }
                 }
+
+                // Verify guild_configs has 'status' column
+                string columnScript = string.Format(
+                    "$ProgressPreference = 'SilentlyContinue'; " +
+                    "$headers = @{{ 'apikey'='{0}'; 'Authorization'='Bearer {0}' }}; " +
+                    "$url = '{1}/rest/v1/guild_configs?select=status&limit=1'; " +
+                    "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -ErrorAction Stop; exit 0 }} catch {{ exit 1 }}",
+                    key, url.TrimEnd('/')
+                );
+                if (!RunPowerShellExitCode(columnScript))
+                {
+                    Console.WriteLine("  [検証失敗] 'guild_configs' テーブルに 'status' カラムがありません。最新の SQL を実行してください。");
+                    return false;
+                }
+
                 return true;
             }
             catch
             {
                 return false;
             }
+        }
+
+        static bool RunPowerShellExitCode(string script)
+        {
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = "powershell",
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"" + script + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            var process = Process.Start(psi);
+            process.WaitForExit();
+            return process.ExitCode == 0;
+        }
+
+        static string FindVoicevoxPath()
+        {
+            try
+            {
+                // 1. Check Registry (HKCU and HKLM)
+                string[] registryPaths = {
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                    @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+                };
+                Microsoft.Win32.RegistryKey[] roots = { Microsoft.Win32.Registry.CurrentUser, Microsoft.Win32.Registry.LocalMachine };
+
+                foreach (var root in roots)
+                {
+                    foreach (var path in registryPaths)
+                    {
+                        using (Microsoft.Win32.RegistryKey key = root.OpenSubKey(path))
+                        {
+                            if (key == null) continue;
+                            foreach (string subkeyName in key.GetSubKeyNames())
+                            {
+                                using (Microsoft.Win32.RegistryKey subkey = key.OpenSubKey(subkeyName))
+                                {
+                                    if (subkey == null) continue;
+                                    string displayName = subkey.GetValue("DisplayName") as string;
+                                    if (displayName != null && displayName.IndexOf("VOICEVOX", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        string installDir = subkey.GetValue("InstallLocation") as string;
+                                        if (!string.IsNullOrEmpty(installDir) && File.Exists(Path.Combine(installDir, "VOICEVOX.exe")))
+                                            return Path.Combine(installDir, "VOICEVOX.exe");
+
+                                        // fallback to display icon path if install location is empty
+                                        string iconPath = subkey.GetValue("DisplayIcon") as string;
+                                        if (!string.IsNullOrEmpty(iconPath))
+                                        {
+                                            string cleanPath = iconPath.Split(',')[0].Trim('"');
+                                            if (File.Exists(cleanPath)) return cleanPath;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Check default paths
+                string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string defaultPath = Path.Combine(localAppData, @"Programs\VOICEVOX\VOICEVOX.exe");
+                if (File.Exists(defaultPath)) return defaultPath;
+
+                // 3. Check if process is already running
+                Process[] procs = Process.GetProcessesByName("VOICEVOX");
+                if (procs.Length > 0)
+                {
+                    try { return procs[0].MainModule.FileName; } catch { }
+                }
+            }
+            catch { }
+            return null;
         }
 
         static void ErrorExit(string message)
