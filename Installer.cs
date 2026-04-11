@@ -564,9 +564,10 @@ END $$;
                     // Use powershell to check table existence via PostgREST
                     string script = string.Format(
                         "$ProgressPreference = 'SilentlyContinue'; " +
+                        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " +
                         "$headers = @{{ 'apikey'='{0}'; 'Authorization'='Bearer {0}' }}; " +
-                        "$url = '{1}/rest/v1/{2}?select=count'; " +
-                        "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Head -ErrorAction Stop; exit 0 }} catch {{ exit 1 }}",
+                        "$url = '{1}/rest/v1/{2}?limit=1'; " +
+                        "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -ErrorAction Stop; exit 0 }} catch {{ exit 1 }}",
                         key, url.TrimEnd('/'), table
                     );
 
@@ -580,6 +581,7 @@ END $$;
                 // Verify guild_configs has 'status' column
                 string columnScript = string.Format(
                     "$ProgressPreference = 'SilentlyContinue'; " +
+                    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " +
                     "$headers = @{{ 'apikey'='{0}'; 'Authorization'='Bearer {0}' }}; " +
                     "$url = '{1}/rest/v1/guild_configs?select=status&limit=1'; " +
                     "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -ErrorAction Stop; exit 0 }} catch {{ exit 1 }}",
