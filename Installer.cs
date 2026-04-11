@@ -178,23 +178,57 @@ CREATE TABLE IF NOT EXISTS logs_v2 (
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS user_settings (
-    user_id TEXT PRIMARY KEY,
-    settings JSONB DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS user_presets (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    voice_id INTEGER NOT NULL,
+    speed DOUBLE PRECISION NOT NULL,
+    pitch DOUBLE PRECISION NOT NULL,
+    volume DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, name)
 );
 
 -- RLS (Row Level Security) の有効化
--- Botやダッシュボード（Secret API Key使用）は引き続き全アクセス可能ですが、
--- 外部（Anon Keyなど）からの不正アクセスを防止します。
 ALTER TABLE guild_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_analytics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs_v2 ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_presets ENABLE ROW LEVEL SECURITY;
+
+-- 簡易的なポリシー作成 (ボット/ダッシュボード用)
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'user_presets') THEN
+        CREATE POLICY ""Allow all access"" ON public.user_presets FOR ALL USING (true);
+    END IF;
+END $$;
 --------------------------------------------------");
             Console.ResetColor();
-            Console.WriteLine("実行が完了したら、この画面に戻ってエンターキーを押してください。");
-            Console.ReadLine();
+            
+            while (true)
+            {
+                Console.WriteLine("\n実行(Run)が完了したら、この画面に戻ってエンターキーを押してください。");
+                Console.WriteLine("データベースの構成を自動検証します...");
+                Console.ReadLine();
+
+                if (VerifySupabase(supabaseUrlInput, supabaseKey))
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("✅ データベースの正常な構成を確認しました！");
+                    Console.ResetColor();
+                    break;
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("\n❌ エラー: データベースの構成が正しくないか、テーブルが見つかりません。");
+                    Console.ResetColor();
+                    Console.WriteLine("SQLエディタで「Run」ボタンを押し、すべてのステートメントが成功したか確認してください。");
+                    Console.WriteLine("再試行するにはエンターキーを、中断するには Ctrl+C を押してください。");
+                }
+            }
 
             Console.WriteLine("\n--- [ セクション 2: Discord 認証情報 ] ---");
 
@@ -294,10 +328,6 @@ ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
             envContent.AppendLine("SMTP_PORT=587");
             envContent.AppendLine(string.Format("SMTP_USER={0}", smtpUser));
             envContent.AppendLine(string.Format("SMTP_PASS={0}", smtpPass));
-            envContent.AppendLine();
-            envContent.AppendLine("# ── Ollama (Local AI) ─────────────────────────────");
-            envContent.AppendLine("OLLAMA_URL=http://localhost:11434");
-            envContent.AppendLine("OLLAMA_MODEL=qwen2.5:7b");
             envContent.AppendLine();
             envContent.AppendLine("# ── VoiceVox (TTS Engine) ─────────────────────────");
             envContent.AppendLine("VOICEVOX_URL=http://localhost:50021");
@@ -472,6 +502,45 @@ ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
             {
                 Console.WriteLine(string.Format("コマンド {0} '{1}' の実行中にエラーが発生しました: {2}", fileName, arguments, ex.Message));
                 return -1;
+            }
+        }
+
+        static bool VerifySupabase(string url, string key)
+        {
+            try
+            {
+                string[] tables = { "guild_configs", "guild_analytics", "logs_v2", "user_presets" };
+                foreach (var table in tables)
+                {
+                    // Use powershell to check table existence via PostgREST
+                    string script = string.Format(
+                        "$ProgressPreference = 'SilentlyContinue'; " +
+                        "$headers = @{{ 'apikey'='{0}'; 'Authorization'='Bearer {0}' }}; " +
+                        "$url = '{1}/rest/v1/{2}?select=count'; " +
+                        "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Head -ErrorAction Stop; exit 0 }} catch {{ exit 1 }}",
+                        key, url.TrimEnd('/'), table
+                    );
+
+                    ProcessStartInfo psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell",
+                        Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"" + script + "\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    var process = Process.Start(psi);
+                    process.WaitForExit();
+                    if (process.ExitCode != 0)
+                    {
+                        Console.WriteLine(string.Format("  [検証失敗] テーブル '{0}' が見つかりません。", table));
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 

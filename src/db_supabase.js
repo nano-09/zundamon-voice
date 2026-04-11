@@ -194,4 +194,55 @@ export async function deleteGuildConfigFromDb(guildId) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// USER PRESETS  — cross-server profiles
+// ═══════════════════════════════════════════════════════════
+export async function getUserPresets(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('user_presets')
+      .select('*')
+      .eq('user_id', userId);
+    if (error) throw error;
+    return data ?? [];
+  } catch (err) {
+    console.error(`[Supabase] getUserPresets error for ${userId}:`, err.message);
+    return [];
+  }
+}
+
+export async function saveUserPreset(userId, name, data) {
+  try {
+    const payload = {
+      user_id: userId,
+      name,
+      voice_id: parseInt(data.voiceId),
+      speed: parseFloat(data.speed),
+      pitch: parseFloat(data.pitch),
+      volume: parseFloat(data.volume),
+      updated_at: new Date().toISOString()
+    };
+    const { error } = await supabase
+      .from('user_presets')
+      .upsert(payload, { onConflict: 'user_id,name' });
+    if (error) throw error;
+  } catch (err) {
+    console.error(`[Supabase] saveUserPreset error for ${userId}:`, err.message);
+    throw err;
+  }
+}
+
+export async function deleteUserPreset(userId, name) {
+  try {
+    const { error } = await supabase
+      .from('user_presets')
+      .delete()
+      .match({ user_id: userId, name });
+    if (error) throw error;
+  } catch (err) {
+    console.error(`[Supabase] deleteUserPreset error for ${userId}:`, err.message);
+    throw err;
+  }
+}
+
 export default supabase;

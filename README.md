@@ -69,7 +69,7 @@ OSに合わせて以下の手順で起動してください。
 3. ✅ ブラウザでダッシュボード（`http://localhost:3000`）が自動で開く
 
 **終了方法（Windows）**
-- ダッシュボード上の 🔥 **SHUTDOWN ECOSYSTEM** ボタンをクリック
+- ダッシュボード上の **⏻ ボットを終了** ボタンをクリック
 - または **`ShutdownZundamon.exe`** を実行
 
 ---
@@ -99,7 +99,7 @@ OSに合わせて以下の手順で起動してください。
 |---------|------|
 | `/set voice <ID>` | 自分専用の声を設定（ユーザーごとに記憶） |
 | `/set <speed/pitch/volume>` | 自分専用の音声パラメータを個別に設定 |
-| `/preset <save/load/list>` | あなたのお気に入りの声設定を保存・呼び出し |
+| `/preset <save/load/list>` | 全サーバー共通のお気に入り設定を保存・呼び出し |
 | `/set-server voice <ID>` | サーバー全体のデフォルトの声を指定 |
 | `/set-server <speed/pitch/volume>` | サーバー全体のデフォルト音声パラメータを個別に設定 |
 | `/readname <True/False>` | 発言者の名前を読み上げるかどうか |

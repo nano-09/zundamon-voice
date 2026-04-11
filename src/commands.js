@@ -4,7 +4,6 @@
 import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder } from 'discord.js';
 import { joinChannel, leaveChannel, isConnected, enqueue, pauseMusic, skipMusic, enqueueMusic, getQueue, setLoopMode, subscribeToMusic } from './player.js';
 import { getGuildConfig, setGuildConfig, updateGuildMeta, getFullGuildConfig } from './config.js';
-import { cancelAiGeneration } from './ai.js';
 import { isGuildAuthorized, isGuildBlocked } from './auth.js';
 import fs from 'fs';
 import path from 'path';
@@ -13,7 +12,7 @@ import { pipeline } from 'stream/promises';
 import axios from 'axios';
 import ytExec from 'youtube-dl-exec';
 import ytSearch from 'yt-search';
-import supabase, { logToSupabase } from './db_supabase.js';
+import supabase, { logToSupabase, getUserPresets, saveUserPreset, deleteUserPreset } from './db_supabase.js';
 import { incrementCommand, incrementCounter } from './stats.js';
 import { DEFAULT_PERMISSIONS } from './constants.js';
 
@@ -254,14 +253,14 @@ export async function handleAutocomplete(interaction) {
       await interaction.respond(filtered);
     } else if (focusedOption.name === 'name') {
       try {
-        const guildId = interaction.guildId;
         const userId = interaction.user.id;
-        const cfg = getGuildConfig(guildId);
-        const presets = cfg?.userPresets?.[userId] || {};
-        const presetNames = Object.keys(presets);
+        const presets = await getUserPresets(userId);
         const q = String(focusedOption.value).toLowerCase();
-        const filtered = presetNames.filter(name => name.toLowerCase().includes(q)).slice(0, 25);
-        await interaction.respond(filtered.map(name => ({ name, value: name })));
+        const filtered = presets
+          .filter(p => p.name.toLowerCase().includes(q))
+          .slice(0, 25)
+          .map(p => ({ name: p.name, value: p.name }));
+        await interaction.respond(filtered);
       } catch (e) {
         await interaction.respond([]);
       }
@@ -518,14 +517,11 @@ export async function handleCommand(interaction) {
     });
   }
 
-  // ── /preset ──────────────────────────────────────────────────
+  // ── /preset (Global) ──────────────────────────────────────────
   if (commandName === 'preset') {
     const sub = interaction.options.getSubcommand();
     const cfg = getFullGuildConfig(guild.id).settings;
     const userId = interaction.user.id;
-
-    if (!cfg.userPresets) cfg.userPresets = {};
-    if (!cfg.userPresets[userId]) cfg.userPresets[userId] = {};
 
     if (sub === 'save') {
       const presetName = interaction.options.getString('name');
@@ -535,21 +531,21 @@ export async function handleCommand(interaction) {
       const pitch = userParams.pitch ?? cfg.pitch ?? 0.0;
       const volume = userParams.volume ?? cfg.volume ?? 1.0;
 
-      cfg.userPresets[userId][presetName] = { voiceId, speed, pitch, volume };
-      setGuildConfig(guild.id, { userPresets: cfg.userPresets });
+      await saveUserPreset(userId, presetName, { voiceId, speed, pitch, volume });
 
       const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(voiceId));
       const vName = voiceInfo ? voiceInfo.name : '不明な話者';
 
       return interaction.reply({
-        content: `💾 現在の設定をプリセット **${presetName}** として保存したのだ！\n・話者: ${vName}\n・速度: ${speed}\n・ピッチ: ${pitch}\n・音量: ${volume}`,
+        content: `💾 現在の設定をグローバルプリセット **${presetName}** として保存したのだ！\nどのサーバーでも使用できるのだ。\n・話者: ${vName}\n・速度: ${speed}\n・ピッチ: ${pitch}\n・音量: ${volume}`,
         flags: [MessageFlags.Ephemeral]
       });
     }
 
     if (sub === 'load') {
       const presetName = interaction.options.getString('name');
-      const preset = cfg.userPresets[userId][presetName];
+      const presets = await getUserPresets(userId);
+      const preset = presets.find(p => p.name === presetName);
 
       if (!preset) {
         return interaction.reply({
@@ -558,28 +554,29 @@ export async function handleCommand(interaction) {
         });
       }
 
-      if (!cfg.userVoices) cfg.userVoices = {};
-      if (!cfg.userParams) cfg.userParams = {};
+      const userVoices = cfg.userVoices || {};
+      const userParams = cfg.userParams || {};
 
-      cfg.userVoices[userId] = preset.voiceId;
-      cfg.userParams[userId] = {
+      userVoices[userId] = preset.voice_id;
+      userParams[userId] = {
         speed: preset.speed,
         pitch: preset.pitch,
         volume: preset.volume
       };
-      setGuildConfig(guild.id, { userVoices: cfg.userVoices, userParams: cfg.userParams });
+      
+      setGuildConfig(guild.id, { userVoices, userParams });
 
-      const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(preset.voiceId));
+      const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(preset.voice_id));
       const vName = voiceInfo ? voiceInfo.name : '不明な話者';
 
       return interaction.reply({
-        content: `🔄 プリセット **${presetName}** を読み込んだのだ！\n・話者: ${vName}\n・速度: ${preset.speed}\n・ピッチ: ${preset.pitch}\n・音量: ${preset.volume}`,
+        content: `🔄 グローバルプリセット **${presetName}** を読み込んだのだ！\n・話者: ${vName}\n・速度: ${preset.speed}\n・ピッチ: ${preset.pitch}\n・音量: ${preset.volume}`,
         flags: [MessageFlags.Ephemeral]
       });
     }
 
     if (sub === 'list') {
-      const presets = Object.entries(cfg.userPresets[userId]);
+      const presets = await getUserPresets(userId);
       if (presets.length === 0) {
         return interaction.reply({
           content: `📌 あなたはまだプリセットを保存していないのだ。\n\`/preset save <名前>\` で保存できるのだ！`,
@@ -589,13 +586,14 @@ export async function handleCommand(interaction) {
 
       const embed = new EmbedBuilder()
         .setColor('#4318ff')
-        .setTitle('📌 あなたの保存済みプリセット');
+        .setTitle('📌 あなたのグローバルプリセット')
+        .setDescription('保存したプリセットは全てのサーバーで共通で使用できるのだ！');
 
-      presets.forEach(([name, p]) => {
-        const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(p.voiceId));
+      presets.forEach((p) => {
+        const voiceInfo = VOICES_LIST.find(v => v.value === parseInt(p.voice_id));
         const vName = voiceInfo ? voiceInfo.name : '不明な話者';
         embed.addFields({
-          name: `🔖 ${name}`,
+          name: `🔖 ${p.name}`,
           value: `・話者: ${vName}\n・速度: ${p.speed} | ピッチ: ${p.pitch} | 音量: ${p.volume}`,
           inline: false
         });
@@ -624,31 +622,6 @@ export async function handleCommand(interaction) {
       .setTimestamp();
 
     return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /search ────────────────────────────────────────────────────
-  if (commandName === 'search') {
-    const text = interaction.options.getString('text');
-    try {
-      await interaction.deferReply();
-    } catch (err) {
-      console.warn('⚠️ [search] Interaction timeout:', err.message);
-      return;
-    }
-
-    const { reply, urls } = await processSearchCommand(guild.id, interaction.user.id, text);
-
-    const embed = new EmbedBuilder()
-      .setColor('#81C784')
-      .setTitle('🔍 検索結果なのだ')
-      .setDescription(`**❓ 質問:**\n${text}\n\n**💬 回答:**\n${reply}`)
-      .setTimestamp();
-
-    if (urls && urls.length > 0) {
-      embed.addFields({ name: '🔗 参考ソース', value: urls.slice(0, 5).join('\n') });
-    }
-
-    return interaction.editReply({ embeds: [embed] });
   }
 
   // ── /serverstatus ──────────────────────────────────────────────
@@ -930,6 +903,9 @@ export async function handleCommand(interaction) {
           { cmd: 'readname', desc: '発言者の名前読み上げ (オン/オフ)' },
           { cmd: 'announce', desc: '入退室読み上げ (オン/オフ)' },
           { cmd: 'trim', desc: '読み上げ最大文字数を設定' },
+          { cmd: 'preset save', desc: '現在の声設定を保存 (全サーバー共通)' },
+          { cmd: 'preset load', desc: '保存した声設定を読み込み' },
+          { cmd: 'preset list', desc: '保存済み設定の一覧を表示' },
           { cmd: 'customsound add', desc: 'キーワードに反応するSEを追加' },
           { cmd: 'customsound remove', desc: 'キーワード反応SEを削除' },
           { cmd: 'customsound list', desc: '登録済みSEの一覧を表示' },

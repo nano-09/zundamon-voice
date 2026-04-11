@@ -93,23 +93,63 @@ CREATE TABLE IF NOT EXISTS logs_v2 (
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS user_settings (
-    user_id TEXT PRIMARY KEY,
-    settings JSONB DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS user_presets (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    voice_id INTEGER NOT NULL,
+    speed DOUBLE PRECISION NOT NULL,
+    pitch DOUBLE PRECISION NOT NULL,
+    volume DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, name)
 );
 
 -- RLS (Row Level Security) の有効化
--- Botやダッシュボード（Secret API Key使用）は引き続き全アクセス可能ですが、
--- 外部（Anon Keyなど）からの不正アクセスを防止します。
 ALTER TABLE guild_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_analytics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs_v2 ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_presets ENABLE ROW LEVEL SECURITY;
+
+-- 簡易的なポリシー作成 (ボット/ダッシュボード用)
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'user_presets') THEN
+        CREATE POLICY "Allow all access" ON public.user_presets FOR ALL USING (true);
+    END IF;
+END $$;
 SQL
 echo "--------------------------------------------------"
-echo "実行が完了したら、この画面に戻ってエンターキーを押してください。"
-read -p ""
+
+while true; do
+    echo "実行(Run)が完了したら、この画面に戻ってエンターキーを押してください。"
+    echo "データベースの構成を自動検証します..."
+    read -p ""
+    
+    all_ok=true
+    for table in guild_configs guild_analytics logs_v2 user_presets; do
+        # Use curl to check table via PostgREST
+        status_code=$(curl -s -o /dev/null -w "%{http_code}" -X HEAD "${supa_url_input%/}/rest/v1/$table?select=count" \
+            -H "apikey: $supa_key" \
+            -H "Authorization: Bearer $supa_key")
+        
+        if [ "$status_code" != "200" ]; then
+            echo "  [検証失敗] テーブル '$table' が見つかりません (HTTP $status_code)"
+            all_ok=false
+        fi
+    done
+
+    if [ "$all_ok" = true ]; then
+        echo "✅ データベースの正常な構成を確認しました！"
+        break
+    else
+        echo
+        echo "❌ エラー: データベースの構成が正しくないか、テーブルが見つかりません。"
+        echo "SQLエディタで「Run」ボタンを押し、すべてのステートメントが成功したか確認してください。"
+        echo "再試行するにはエンターキーを、中断するには Ctrl+C を押してください。"
+    fi
+done
 
 echo
 echo "--- [ セクション 2: Discord 認証情報 ] ---"
@@ -175,10 +215,6 @@ SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=$smtp_user
 SMTP_PASS=$smtp_pass
-
-# ── Ollama (Local AI) ─────────────────────────────
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b
 
 # ── VoiceVox (TTS Engine) ─────────────────────────
 VOICEVOX_URL=http://localhost:50021
