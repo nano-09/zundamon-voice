@@ -141,10 +141,10 @@ namespace ZundamonInstaller
             }
 
             string supabaseKey = PromptInput(
-                "Supabase Secret API Key",
-                "1.左にある「Project Settings（ギアアイコン）」に入り「API Keys」を開きます。\n" +
-                "2.「Secret keys」の右側にある「Copy API Key」を押してコピーしてください。",
-                "sb_secret_..."
+                "Supabase service_role Key",
+                "1.左メニュー下部の「Project Settings（ギアアイコン）」から「API」を開きます。\n" +
+                "2.「Project API keys」内にある「service_role (secret)」項目の横の「Reveal」を押し、「Copy」ボタンでコピーしてください。",
+                "eyJ..."
             );
 
             // Open Supabase SQL Editor helper
@@ -573,7 +573,16 @@ END $$;
                     string errorOutput;
                     if (!RunPowerShellExitCode(script, out errorOutput))
                     {
-                        Console.WriteLine(string.Format("  [検証失敗] テーブル '{0}' が見つかりません。詳細: {1}", table, errorOutput));
+                        if (errorOutput.Contains("(401)"))
+                        {
+                            Console.WriteLine("  [検証失敗] 認証エラー (401 Unauthorized)。");
+                            Console.WriteLine("  APIキー (service_role Key) が間違っているか、正しくコピーされていません。");
+                            Console.WriteLine("  お手数ですが、インストーラーを(Ctrl+Cなどで)一度終了し、正しいキーで最初からやり直してください。");
+                        }
+                        else
+                        {
+                            Console.WriteLine(string.Format("  [検証失敗] テーブル '{0}' が見つかりません。詳細: {1}", table, errorOutput));
+                        }
                         return false;
                     }
                 }
