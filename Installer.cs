@@ -561,19 +561,19 @@ END $$;
                 string[] tables = { "guild_configs", "guild_analytics", "logs_v2", "user_presets", "music_lyrics" };
                 foreach (var table in tables)
                 {
-                    // Use powershell to check table existence via PostgREST
                     string script = string.Format(
                         "$ProgressPreference = 'SilentlyContinue'; " +
                         "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " +
                         "$headers = @{{ 'apikey'='{0}'; 'Authorization'='Bearer {0}' }}; " +
                         "$url = '{1}/rest/v1/{2}?limit=1'; " +
-                        "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -ErrorAction Stop; exit 0 }} catch {{ exit 1 }}",
+                        "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -UseBasicParsing -ErrorAction Stop; exit 0 }} catch {{ Write-Output $_.Exception.Response; Write-Output $_.Exception.Message; exit 1 }}",
                         key, url.TrimEnd('/'), table
                     );
 
-                    if (!RunPowerShellExitCode(script))
+                    string errorOutput;
+                    if (!RunPowerShellExitCode(script, out errorOutput))
                     {
-                        Console.WriteLine(string.Format("  [検証失敗] テーブル '{0}' が見つかりません。", table));
+                        Console.WriteLine(string.Format("  [検証失敗] テーブル '{0}' が見つかりません。詳細: {1}", table, errorOutput));
                         return false;
                     }
                 }
@@ -584,12 +584,14 @@ END $$;
                     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " +
                     "$headers = @{{ 'apikey'='{0}'; 'Authorization'='Bearer {0}' }}; " +
                     "$url = '{1}/rest/v1/guild_configs?select=status&limit=1'; " +
-                    "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -ErrorAction Stop; exit 0 }} catch {{ exit 1 }}",
+                    "try {{ $res = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -UseBasicParsing -ErrorAction Stop; exit 0 }} catch {{ Write-Output $_.Exception.Message; exit 1 }}",
                     key, url.TrimEnd('/')
                 );
-                if (!RunPowerShellExitCode(columnScript))
+                
+                string columnError;
+                if (!RunPowerShellExitCode(columnScript, out columnError))
                 {
-                    Console.WriteLine("  [検証失敗] 'guild_configs' テーブルに 'status' カラムがありません。最新の SQL を実行してください。");
+                    Console.WriteLine("  [検証失敗] 'guild_configs' テーブルに 'status' カラムがありません。詳細: " + columnError);
                     return false;
                 }
 
@@ -601,17 +603,22 @@ END $$;
             }
         }
 
-        static bool RunPowerShellExitCode(string script)
+        static bool RunPowerShellExitCode(string script, out string errorOutput)
         {
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = "powershell",
                 Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"" + script + "\"",
                 UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 CreateNoWindow = true
             };
             var process = Process.Start(psi);
+            string output = process.StandardOutput.ReadToEnd();
+            string err = process.StandardError.ReadToEnd();
             process.WaitForExit();
+            errorOutput = (output + "\n" + err).Trim();
             return process.ExitCode == 0;
         }
 
