@@ -276,11 +276,16 @@
                       <h2>アクティビティ推移</h2>
                       <div class="graph-header-controls">
                         <div class="control-group">
-                          <span class="control-label">期間:</span>
-                          <div class="chip-row" id="graph-range-picker">
-                            <div class="chip active" data-range="24h">24時間</div>
-                            <div class="chip" data-range="7d">7日間</div>
-                            <div class="chip" data-range="30d">30日間</div>
+                          <span class="control-label">表示範囲:</span>
+                          <div class="range-input-group">
+                            <div class="interval-input-group">
+                              <input type="number" id="graph-range-value" value="24" min="1">
+                              <select id="graph-range-unit">
+                                <option value="h" selected>時間</option>
+                                <option value="d">日</option>
+                                <option value="w">週間</option>
+                              </select>
+                            </div>
                           </div>
                         </div>
                         <div class="control-group">
@@ -349,15 +354,35 @@
               <!-- Assets Pane -->
               <div class="lpane" id="lpane-assets">
                 <div class="config-pane-wrap">
-                  <section>
+                  <section class="asset-section">
                     <div class="config-section-head">
                       <h3>📢 カスタムサウンドボード</h3>
+                      <button class="action-btn primary btn-sm" onclick="showAddSoundForm()">+ 音源を追加</button>
+                    </div>
+                    <div id="add-sound-form" class="asset-add-form" style="display:none">
+                       <div class="asset-form-row">
+                          <input type="text" id="sound-keyword" placeholder="反応キーワード (例: おつかれ)">
+                          <div class="file-input-wrapper">
+                             <button class="file-btn">ファイルを選択</button>
+                             <input type="file" id="sound-file" accept="audio/*">
+                             <span id="sound-file-name" class="file-name">選択されていません</span>
+                          </div>
+                          <button class="action-btn ok" onclick="submitAddSound()">追加</button>
+                       </div>
                     </div>
                     <div class="asset-grid" id="asset-sounds-list"></div>
                   </section>
-                  <section>
+                  <section class="asset-section">
                     <div class="config-section-head">
                       <h3>✨ カスタム絵文字</h3>
+                      <button class="action-btn primary btn-sm" onclick="showAddEmojiForm()">+ 絵文字を追加</button>
+                    </div>
+                    <div id="add-emoji-form" class="asset-add-form" style="display:none">
+                       <div class="asset-form-row">
+                          <input type="text" id="emoji-input" placeholder="絵文字 or ID (<:name:id>)">
+                          <input type="text" id="emoji-readtext" placeholder="読み上げテキスト">
+                          <button class="action-btn ok" onclick="submitAddEmoji()">追加</button>
+                       </div>
                     </div>
                     <div class="asset-grid" id="asset-emojis-list"></div>
                   </section>

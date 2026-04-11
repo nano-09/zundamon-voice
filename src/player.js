@@ -146,7 +146,7 @@ export async function joinChannel(voiceChannel, retryCount = 0) {
   const ttsPlayer = createAudioPlayer({
     behaviors: { noSubscriber: NoSubscriberBehavior.Play }
   });
-  
+
   // Initially subscribe to ttsPlayer (default for readMode)
   connection.subscribe(ttsPlayer);
 
@@ -168,7 +168,7 @@ export async function joinChannel(voiceChannel, retryCount = 0) {
         state.queue.push(finishedSong); // add to end of queue
       }
     }
-    
+
     clearNowPlaying(voiceChannel.guild.id);
 
     // Auto-exit karaoke mode if queue is empty
@@ -313,7 +313,7 @@ export function enqueue(guildId, text, userId = null, userName = null) {
     console.error('[TTS] Parallel synthesis failed:', e.message);
     return null;
   });
-  
+
   state.ttsQueue.push({ type: 'tts', text, userId, userName, streamPromise });
   if (!state.ttsPlaying) {
     processTtsQueue(guildId);
@@ -571,7 +571,7 @@ function checkAutoExitKaraoke(guildId) {
     const logMsg = `Queue empty. Reverting to TTS mode.`;
     console.log(`[G:${guildId}] [Player] ${logMsg}`);
     logToSupabase(guildId, 'sys', logMsg);
-    
+
     setGuildConfig(guildId, { karaokeMode: false });
     updateGuildMeta(guildId, { status: '通話中' });
     // Switch back to ttsPlayer
@@ -666,23 +666,23 @@ async function processQueue(guildId) {
           const isRestricted = accumulatedErr.includes('Sign in to confirm your age');
           const isPrivate = accumulatedErr.includes('Private video');
           const isUnavailable = accumulatedErr.includes('Video unavailable');
-          
+
           if ((isRestricted || isPrivate || isUnavailable) && discordClient) {
-             const cfg = getGuildConfig(guildId);
-             if (cfg.textChannelId) {
-                const channel = discordClient.channels.cache.get(cfg.textChannelId);
-                if (channel) {
-                   let reason = '利用できません';
-                   if (isRestricted) reason = '年齢制限がかかっています';
-                   if (isPrivate) reason = '非公開動画です';
-                   
-                   const errEmbed = new EmbedBuilder()
-                     .setColor('#E57373')
-                     .setTitle('⚠️ 再生エラー')
-                     .setDescription(`**${item.title}** は${reason}ため再生できないのだ。スキップするのだ！`);
-                   channel.send({ embeds: [errEmbed] }).catch(()=>null);
-                }
-             }
+            const cfg = getGuildConfig(guildId);
+            if (cfg.textChannelId) {
+              const channel = discordClient.channels.cache.get(cfg.textChannelId);
+              if (channel) {
+                let reason = '利用できません';
+                if (isRestricted) reason = '年齢制限がかかっています';
+                if (isPrivate) reason = '非公開動画です';
+
+                const errEmbed = new EmbedBuilder()
+                  .setColor('#E57373')
+                  .setTitle('⚠️ 再生エラー')
+                  .setDescription(`**${item.title}** は${reason}ため再生できないのだ。スキップするのだ！`);
+                channel.send({ embeds: [errEmbed] }).catch(() => null);
+              }
+            }
           }
         }
       });
@@ -696,12 +696,12 @@ async function processQueue(guildId) {
 
       const resource = createAudioResource(ffmpeg.stdout, {
         inputType: StreamType.OggOpus,
-        inlineVolume: false 
+        inlineVolume: false
       });
       console.log(`[Player] Music resource created. StreamType: Raw, InlineVolume: false`);
 
       state.musicPlayer.play(resource);
-      
+
       sendNowPlayingEmbed(guildId, item, resource);
     }
   } catch (err) {
@@ -779,15 +779,15 @@ function createProgressBar(currentMs, totalDurationStr) {
   } else if (parts.length === 3) {
     totalSeconds = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
   }
-  
+
   if (totalSeconds === 0) return '▬▬▬🔘▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
-  
+
   const currentSeconds = Math.floor(currentMs / 1000);
   const percent = Math.min(currentSeconds / totalSeconds, 1);
   const barSize = 15;
   const progress = Math.round(barSize * percent);
   const empty = Math.max(barSize - progress, 0);
-  
+
   return '▬'.repeat(progress) + '🔘' + '▬'.repeat(empty);
 }
 
@@ -809,37 +809,37 @@ async function sendNowPlayingEmbed(guildId, song, resource) {
     .setThumbnail(song.thumbnail)
     .setDescription(`**[${song.title}](${song.url})**\n\n${createProgressBar(0, song.duration)}\n\`0:00 / ${song.duration}\``);
 
-  if (song.artist) embed.addFields({ name: '🎤 Artist', value: song.artist, inline: true });
-  embed.addFields({ name: '👤 Requested by', value: `<@${song.userId}>`, inline: true });
-  embed.addFields({ name: '📍 Location', value: `<#${cfg.voiceChannelId}>`, inline: true });
+  if (song.artist) embed.addFields({ name: 'アーティスト', value: song.artist, inline: true });
+  embed.addFields({ name: 'リクエスト者', value: `<@${song.userId}>`, inline: true });
+  embed.addFields({ name: 'ボイスチャンネル', value: `<#${cfg.voiceChannelId}>`, inline: true });
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('music_lyrics')
-      .setLabel('🎶 Lyrics')
+      .setLabel('🎶 歌詞')
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId('music_pause')
-      .setLabel('⏯️ Pause/Play')
+      .setLabel('⏯️ 一時停止/再生')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId('music_skip')
-      .setLabel('⏭️ Skip')
+      .setLabel('⏭️ スキップ')
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId('music_loop')
-      .setLabel('🔁 Loop')
+      .setLabel('🔁 リピート')
       .setStyle(ButtonStyle.Secondary),
   );
 
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('music_shuffle')
-      .setLabel('🔀 Shuffle')
+      .setLabel('🔀 シャッフル')
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId('music_stop')
-      .setLabel('❌ Stop')
+      .setLabel('❌ 停止')
       .setStyle(ButtonStyle.Danger)
   );
 
@@ -852,7 +852,7 @@ async function sendNowPlayingEmbed(guildId, song, resource) {
         clearInterval(state.nowPlayingInterval);
         return;
       }
-      
+
       const currentStatus = state.musicPlayer?.state.status;
       if (currentStatus === AudioPlayerStatus.Paused) {
         return;
@@ -861,9 +861,9 @@ async function sendNowPlayingEmbed(guildId, song, resource) {
       const currentMs = resource.playbackDuration;
       const elapsed = formatDuration(currentMs);
       const progressBar = createProgressBar(currentMs, song.duration);
-      
+
       const newEmbed = EmbedBuilder.from(embed).setDescription(`**[${song.title}](${song.url})**\n\n${progressBar}\n\`${elapsed} / ${song.duration}\``);
-      
+
       msg.edit({ embeds: [newEmbed] }).catch(() => {
         clearInterval(state.nowPlayingInterval);
       });

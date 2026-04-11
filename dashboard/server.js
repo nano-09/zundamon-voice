@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import { spawn, exec } from 'child_process';
+import multer from 'multer';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
@@ -16,6 +17,7 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
@@ -241,6 +243,46 @@ app.post('/api/block-guild', async (req, res) => {
     res.json({ ok: true, blocked: settings.blocked, isLocked: blocked });
   } catch (err) {
     console.error('[API] /api/block-guild error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload sound to Supabase Storage
+app.post('/api/upload-sound', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const { guildId } = req.body;
+  if (!guildId) return res.status(400).json({ error: 'guildId required' });
+
+  try {
+    const ext = path.extname(req.file.originalname) || '.mp3';
+    const fileName = `${guildId}_${Date.now()}${ext}`;
+
+    const { error } = await supabase.storage.from('sounds').upload(fileName, req.file.buffer, {
+      contentType: req.file.mimetype,
+      upsert: true
+    });
+
+    if (error) throw error;
+
+    const { data: { publicUrl } } = supabase.storage.from('sounds').getPublicUrl(fileName);
+    res.json({ ok: true, url: publicUrl, path: fileName });
+  } catch (err) {
+    console.error('[API] /api/upload-sound error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete sound from Supabase Storage
+app.post('/api/delete-sound', async (req, res) => {
+  const { path: filePath } = req.body;
+  if (!filePath) return res.status(400).json({ error: 'path required' });
+
+  try {
+    const { error } = await supabase.storage.from('sounds').remove([filePath]);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[API] /api/delete-sound error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

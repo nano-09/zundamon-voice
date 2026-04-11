@@ -482,6 +482,12 @@ body {
   letter-spacing: 0.5px;
 }
 
+.range-input-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .interval-input-group {
   display: flex;
   align-items: stretch;
@@ -493,7 +499,7 @@ body {
 }
 
 .interval-input-group input {
-  width: 50px;
+  width: 55px;
   background: none;
   border: none;
   border-right: 1px solid var(--border);
@@ -2323,3 +2329,183 @@ body {
 .lock-form input { height: 50px; border-radius: 12px; border: 2px solid var(--border); padding: 0 16px; font-size: 24px; font-weight: 800; text-align: center; letter-spacing: 4px; font-family: var(--mono); outline: none; }
 .lock-form input:focus { border-color: var(--accent); }
 
+
+/* ── Assets Management UI ── */
+.asset-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.asset-add-form {
+  background: var(--bg);
+  border-radius: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  animation: slidePanelDown 0.3s ease-out;
+}
+
+@keyframes slidePanelDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.asset-form-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.asset-form-row input[type="text"] {
+  flex: 1;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 0 14px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  background: var(--surface);
+}
+
+.asset-form-row input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+.file-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 10px;
+  height: 40px;
+  cursor: pointer;
+}
+
+.file-input-wrapper input[type="file"] {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.file-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.file-name {
+  font-size: 12px;
+  color: var(--text-muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.asset-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: all 0.2s;
+  box-shadow: var(--shadow);
+}
+
+.asset-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent2);
+}
+
+.asset-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.asset-card-key {
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-card-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-card-preview-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.emoji-preview {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
+.emoji-text-preview {
+  font-size: 16px;
+}
+
+.asset-delete-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(238, 93, 80, 0.1);
+  color: var(--danger);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 700;
+}
+
+.asset-delete-btn:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.asset-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 40px;
+  background: var(--bg);
+  border: 2px dashed var(--border);
+  border-radius: 14px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}

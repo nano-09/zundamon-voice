@@ -22,7 +22,7 @@ const MAX_TEXT_LENGTH = 200;
  * Checks if the VOICEVOX engine is reachable and responsive.
  * @returns {Promise<boolean>}
  */
-export async function checkVoicevoxHealth() {
+export async function checkVoicevoxHealth(silent = false) {
   const { url } = getTtsConfig();
   try {
     const res = await axios.get(`${url}/version`, { timeout: 3000 });
@@ -32,7 +32,9 @@ export async function checkVoicevoxHealth() {
     }
     return false;
   } catch (err) {
-    console.warn(`[TTS] [Health] VOICEVOX Engine unreachable at ${url}: ${err.message}`);
+    if (!silent) {
+      console.warn(`[TTS] [Health] VOICEVOX Engine unreachable at ${url}: ${err.message}`);
+    }
     return false;
   }
 }

@@ -935,6 +935,10 @@ function switchLTab(tab) {
   if (tab === 'tts' && state.selectedGuildId) renderLogsFromCache(state.selectedGuildId, 'tts');
   if (tab === 'cmd' && state.selectedGuildId) renderLogsFromCache(state.selectedGuildId, 'cmd');
   if (tab === 'err' && state.selectedGuildId) renderLogsFromCache(state.selectedGuildId, 'err');
+  if (tab === 'assets' && state.selectedGuildId) {
+    const dg = state.dbGuilds?.find(x => x.guild_id === state.selectedGuildId);
+    if (dg) renderAssets(dg.settings || {});
+  }
 
   // Load backend logs for these types
   if (['bot', 'tts', 'cmd', 'sys', 'err'].includes(tab) && state.selectedGuildId) {
@@ -992,16 +996,12 @@ function appendLog(pane, text, type) {
 // Activity line chart
 let activityChartInst = null;
 let cmdChartInst = null;
-let currentActivityRange = '24h';
 
-// Graph controls listeners
-document.querySelectorAll('#graph-range-picker .chip').forEach(chip => {
-  chip.onclick = () => {
-    document.querySelectorAll('#graph-range-picker .chip').forEach(c => c.classList.remove('active'));
-    chip.classList.add('active');
-    currentActivityRange = chip.dataset.range;
-    if (state.selectedGuildId) loadDetailAnalytics(state.selectedGuildId);
-  };
+el('graph-range-value')?.addEventListener('change', () => {
+  if (state.selectedGuildId) loadDetailAnalytics(state.selectedGuildId);
+});
+el('graph-range-unit')?.addEventListener('change', () => {
+  if (state.selectedGuildId) loadDetailAnalytics(state.selectedGuildId);
 });
 
 el('graph-interval-value')?.addEventListener('change', () => {
@@ -1012,8 +1012,11 @@ el('graph-interval-unit')?.addEventListener('change', () => {
 });
 
 async function loadDetailAnalytics(guildId) {
-  const hoursMap = { '24h': 24, '7d': 168, '30d': 720 };
-  const hrs = hoursMap[currentActivityRange] || 24;
+  const rangeVal = parseInt(el('graph-range-value').value) || 24;
+  const rangeUnit = el('graph-range-unit').value; // 'h', 'd', 'w'
+  const unitToHrs = { 'h': 1, 'd': 24, 'w': 168 };
+  const hrs = rangeVal * unitToHrs[rangeUnit];
+
   const rawData = await safeFetch(`/api/analytics?guildId=${guildId}&hours=${hrs}`);
   if (!Array.isArray(rawData)) return;
 
@@ -1579,7 +1582,180 @@ async function savePermissions() {
   }
 }
 
-// ── Error Notifications ────────────────────────────────────────────────────────
+// ── Asset Management (Soundboard & Emojis) ───────────────────────────────────
+function renderAssets(settings) {
+  const soundList = el('asset-sounds-list');
+  const emojiList = el('asset-emojis-list');
+  if (!soundList || !emojiList) return;
+
+  const sounds = settings.customSounds || {};
+  const emojis = settings.customEmojis || {};
+
+  // Sounds
+  const soundKeys = Object.keys(sounds);
+  if (soundKeys.length === 0) {
+    soundList.innerHTML = '<div class="asset-empty">登録済みの音源はありません</div>';
+  } else {
+    soundList.innerHTML = soundKeys.map(k => `
+      <div class="asset-card">
+        <div class="asset-card-info">
+          <div class="asset-card-key">${escHtml(k)}</div>
+          <div class="asset-card-sub">URL: ${sounds[k].url?.substring(0, 30)}...</div>
+        </div>
+        <button class="asset-delete-btn" onclick="removeAssetSound('${escHtml(k)}')">✕</button>
+      </div>
+    `).join('');
+  }
+
+  // Emojis
+  const emojiKeys = Object.keys(emojis);
+  if (emojiKeys.length === 0) {
+    emojiList.innerHTML = '<div class="asset-empty">登録済みの絵文字はありません</div>';
+  } else {
+    emojiList.innerHTML = emojiKeys.map(k => {
+      const isCustom = k.match(/^\d+$/);
+      const display = isCustom ? `<img src="https://cdn.discordapp.com/emojis/${k}.webp" class="emoji-preview">` : `<span class="emoji-text-preview">${escHtml(k)}</span>`;
+      return `
+        <div class="asset-card">
+          <div class="asset-card-info">
+            <div class="asset-card-preview-wrap">${display} <span class="asset-card-key">${escHtml(k)}</span></div>
+            <div class="asset-card-sub">読み方: ${escHtml(emojis[k])}</div>
+          </div>
+          <button class="asset-delete-btn" onclick="removeAssetEmoji('${escHtml(k)}')">✕</button>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+function showAddSoundForm() {
+  const form = el('add-sound-form');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  // Sync file input label
+  el('sound-file')?.addEventListener('change', (e) => {
+    const name = e.target.files[0]?.name || '選択されていません';
+    el('sound-file-name').textContent = name;
+  });
+}
+
+async function submitAddSound() {
+  const keyword = el('sound-keyword').value.trim();
+  const fileInput = el('sound-file');
+  const file = fileInput.files[0];
+
+  if (!keyword || !file) {
+    showToast('キーワードとファイルを選択してください', 'error');
+    return;
+  }
+
+  showToast('📤 ファイルをアップロード中...', 'pending');
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('guildId', state.selectedGuildId);
+
+    const res = await fetch('/api/upload-sound', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!res.ok) throw new Error('Upload failed');
+    const { url, path } = await res.json();
+
+    const dg = state.dbGuilds.find(x => x.guild_id === state.selectedGuildId);
+    if (!dg.settings) dg.settings = {};
+    if (!dg.settings.customSounds) dg.settings.customSounds = {};
+    
+    dg.settings.customSounds[keyword] = { url, path };
+
+    await saveGuildSettings(state.selectedGuildId);
+    renderAssets(dg.settings);
+    
+    el('sound-keyword').value = '';
+    el('sound-file').value = '';
+    el('sound-file-name').textContent = '選択されていません';
+    el('add-sound-form').style.display = 'none';
+  } catch (err) {
+    showToast('❌ 追加に失敗しました', 'error');
+  }
+}
+
+async function removeAssetSound(keyword) {
+  if (!confirm(`音源「${keyword}」を削除しますか？`)) return;
+
+  const dg = state.dbGuilds.find(x => x.guild_id === state.selectedGuildId);
+  const soundData = dg.settings.customSounds[keyword];
+
+  showToast('🗑 削除中...', 'pending');
+
+  try {
+    if (soundData.path) {
+      await fetch('/api/delete-sound', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: soundData.path })
+      });
+    }
+
+    delete dg.settings.customSounds[keyword];
+    await saveGuildSettings(state.selectedGuildId);
+    renderAssets(dg.settings);
+  } catch (err) {
+    showToast('❌ 削除に失敗しました', 'error');
+  }
+}
+
+function showAddEmojiForm() {
+  const form = el('add-emoji-form');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+async function submitAddEmoji() {
+  let emojiInput = el('emoji-input').value.trim();
+  const readText = el('emoji-readtext').value.trim();
+
+  if (!emojiInput || !readText) {
+    showToast('絵文字またはID、および読み上げテキストを入力してください', 'error');
+    return;
+  }
+
+  // Extract ID if Discord format
+  const match = emojiInput.match(/<a?:\w+:(\d+)>/);
+  const emojiId = match ? match[1] : emojiInput;
+
+  const dg = state.dbGuilds.find(x => x.guild_id === state.selectedGuildId);
+  if (!dg.settings) dg.settings = {};
+  if (!dg.settings.customEmojis) dg.settings.customEmojis = {};
+  
+  dg.settings.customEmojis[emojiId] = readText;
+
+  await saveGuildSettings(state.selectedGuildId);
+  renderAssets(dg.settings);
+
+  el('emoji-input').value = '';
+  el('emoji-readtext').value = '';
+  el('add-emoji-form').style.display = 'none';
+}
+
+async function removeAssetEmoji(emojiId) {
+  if (!confirm(`絵文字辞書「${emojiId}」を削除しますか？`)) return;
+
+  const dg = state.dbGuilds.find(x => x.guild_id === state.selectedGuildId);
+  delete dg.settings.customEmojis[emojiId];
+
+  showToast('🗑 削除中...', 'pending');
+  await saveGuildSettings(state.selectedGuildId);
+  renderAssets(dg.settings);
+}
+
+// ── Misc Helpers ─────────────────────────────────────────────────────────────
+function escHtml(str) {
+  if (!str) return '';
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
 function pushError(msg) {
   state.errors.push({ msg, time: now() });
   // Badge

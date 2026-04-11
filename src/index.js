@@ -154,8 +154,18 @@ client.once(Events.ClientReady, async (c) => {
       console.log(`   VOICEVOX: ${getBotConfig('VOICEVOX_URL') || 'http://localhost:50021'}`);
       console.log(`   スピーカー ID: ${getBotConfig('VOICEVOX_SPEAKER') || '3'} (ずんだもん)`);
 
-      // VOICEVOX Health Check
-      const isVoicevoxOk = await checkVoicevoxHealth();
+      // VOICEVOX Health Check with Retries
+      let isVoicevoxOk = false;
+      const totalAttempts = 5;
+      for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+        isVoicevoxOk = await checkVoicevoxHealth(attempt < totalAttempts); // Silent until last attempt
+        if (isVoicevoxOk) break;
+        if (attempt < totalAttempts) {
+          console.log(`[TTS] [Health] VOICEVOX Engine not ready (Attempt ${attempt}/${totalAttempts}). Retrying in 2s...`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+
       if (!isVoicevoxOk) {
         console.warn('==================================================================');
         console.warn('[WARNING] VOICEVOX Engine に接続できないのだ！');
