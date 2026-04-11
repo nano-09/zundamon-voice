@@ -1,13 +1,9 @@
-// src/botConfig.js
-// Service for fetching global bot configuration from Supabase Vault
-
-import supabase from './db_supabase.js';
+import 'dotenv/config';
 
 const configCache = new Map();
 
 /**
  * List of expected configuration keys.
- * These will be fetched from Supabase Vault at startup.
  */
 const CONFIG_KEYS = [
   'DISCORD_TOKEN',
@@ -23,38 +19,20 @@ const CONFIG_KEYS = [
 ];
 
 /**
- * Initializes the global bot configuration by fetching all keys from Supabase Vault.
+ * Initializes the global bot configuration using environment variables.
  */
 export async function initBotConfig() {
-  console.log('[BotConfig] Initializing global config from Supabase Vault...');
+  console.log('[BotConfig] Initializing global config from environment variables...');
   
-  const promises = CONFIG_KEYS.map(async (key) => {
-    try {
-      // process.env takes precedence over Vault for local config overrides
-      const fallback = process.env[key];
-      if (fallback) {
-        configCache.set(key, fallback);
-        return;
-      }
-
-      const { data, error } = await supabase.rpc('get_bot_secret', { secret_name: key });
-      
-      if (error) {
-        console.warn(`[BotConfig] Failed to fetch secret "${key}":`, error.message);
-        return;
-      }
-
-      if (data !== null) {
-        configCache.set(key, data);
-      } else {
-        console.warn(`[BotConfig] Secret "${key}" not found in Vault and no .env fallback.`);
-      }
-    } catch (err) {
-      console.error(`[BotConfig] Error fetching secret "${key}":`, err.message);
+  for (const key of CONFIG_KEYS) {
+    const value = process.env[key];
+    if (value) {
+      configCache.set(key, value);
+    } else {
+      console.warn(`[BotConfig] Environment variable "${key}" is missing.`);
     }
-  });
+  }
 
-  await Promise.all(promises);
   console.log(`[BotConfig] Config initialization complete. (${configCache.size}/${CONFIG_KEYS.length} keys loaded)`);
 }
 

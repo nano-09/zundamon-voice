@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS music_lyrics (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+
 -- RLS (Row Level Security) の有効化
 ALTER TABLE guild_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guild_analytics ENABLE ROW LEVEL SECURITY;
@@ -218,6 +219,16 @@ ALTER TABLE music_lyrics ENABLE ROW LEVEL SECURITY;
 -- 簡易的なポリシー作成 (ボット/ダッシュボード用)
 DO $$ 
 BEGIN
+    -- すべてのテーブルに対して全アクセスポリシーを作成
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'guild_configs') THEN
+        CREATE POLICY ""Allow all access"" ON public.guild_configs FOR ALL USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'guild_analytics') THEN
+        CREATE POLICY ""Allow all access"" ON public.guild_analytics FOR ALL USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'logs_v2') THEN
+        CREATE POLICY ""Allow all access"" ON public.logs_v2 FOR ALL USING (true);
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow all access' AND tablename = 'user_presets') THEN
         CREATE POLICY ""Allow all access"" ON public.user_presets FOR ALL USING (true);
     END IF;
@@ -225,6 +236,10 @@ BEGIN
         CREATE POLICY ""Allow all access"" ON public.music_lyrics FOR ALL USING (true);
     END IF;
 END $$;
+
+-- ⚠️ 重要: Supabase Storage の設定
+-- 1. Dashboard -> Storage -> New Bucket で ""sounds"" という名前のバケットを作成してください。
+-- 2. ""Public bucket"" をオンに設定してください。
 --------------------------------------------------");
             Console.ResetColor();
             

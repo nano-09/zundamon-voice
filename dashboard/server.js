@@ -315,27 +315,7 @@ let pendingStart = false;  // if start was requested while stopping, start again
 const pendingMembersRoles = new Map(); // guildId -> { resolve, timeout }
 const pendingChannels     = new Map(); // guildId -> { resolve, timeout }
 let latestBotStats = { guilds: '-', channels: '-', ping: '-', uptime: '-', user: null };
-let ownerEmailCache = 'Not set';
-let messageCount = 0;
-
-// Fetch owner email from Supabase table at startup
-async function fetchOwnerEmail() {
-  try {
-    const { data, error } = await supabase
-      .from('bot_secrets')
-      .select('value')
-      .eq('name', 'OWNER_EMAIL')
-      .single();
-    if (error) throw error;
-    if (data) {
-      ownerEmailCache = data.value;
-      console.log('[Dashboard] Owner email fetched from Supabase:', ownerEmailCache);
-    }
-  } catch (err) {
-    console.error('[Dashboard] Failed to fetch owner email from Supabase:', err.message);
-  }
-}
-fetchOwnerEmail();
+let ownerEmailCache = process.env.OWNER_EMAIL || 'Not set';
 
 // ═══ HELPERS ═══
 function formatUptime(ms) {
