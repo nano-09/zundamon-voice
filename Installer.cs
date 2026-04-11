@@ -341,7 +341,43 @@ ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
             Console.WriteLine("【 StartZundamon.exe 】 をダブルクリックするだけでボットが起動します！");
             
             Console.WriteLine("\nエンターキーを押すと終了します...");
+            CreateShortcut(targetDir);
             Console.ReadLine();
+        }
+
+        static void CreateShortcut(string targetDir)
+        {
+            try
+            {
+                string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                string shortcutPath = Path.Combine(desktopPath, "ずんだもんボット.lnk");
+                string targetPath = Path.Combine(targetDir, "StartZundamon.exe");
+                string iconPath = Path.Combine(targetDir, "zundamon-icon.ico");
+
+                // PowerShell component for creating the shortcut
+                string script = string.Format(
+                    "$s=(New-Object -COM WScript.Shell).CreateShortcut('{0}');" +
+                    "$s.TargetPath='{1}';" +
+                    "$s.WorkingDirectory='{2}';" +
+                    "$s.IconLocation='{3}';" +
+                    "$s.Save()",
+                    shortcutPath, targetPath, targetDir, iconPath
+                );
+
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "powershell",
+                    Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"" + script + "\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                Process.Start(psi).WaitForExit();
+                Console.WriteLine("\n[🎉] デスクトップに「ずんだもんボット」のショートカットを作成しました！");
+            }
+            catch
+            {
+                // Non-critical failure
+            }
         }
 
         static string PromptInput(string fieldName, string guide, string placeholder, bool optional = false)

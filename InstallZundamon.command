@@ -203,7 +203,16 @@ echo
 echo "================================================="
 echo " 🎉 セットアップがすべて完了しました！"
 echo "================================================="
+echo
 echo "今後は「StartZundamon.command」をダブルクリックして起動してください。"
 echo
+
+# Create Desktop Shortcut (Windows Only)
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" || -d "$USERPROFILE/Desktop" ]]; then
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "\$s=(New-Object -COM WScript.Shell).CreateShortcut(\"\$env:USERPROFILE\Desktop\ずんだもんボット.lnk\");\$s.TargetPath=\"$PWD\StartZundamon.exe\";\$s.WorkingDirectory=\"$PWD\";\$s.IconLocation=\"$PWD\zundamon-icon.ico\";\$s.Save()" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "✅ デスクトップに「ずんだもんボット」のショートカットを作成しました。"
+    fi
+fi
 
 read -p "エンターキーを押すと終了します..."
