@@ -3,3 +3,6 @@ node_modules/
 config.json
 *.log
 *.exe
+!InstallZundamon.exe
+!StartZundamon.exe
+!ShutdownZundamon.exe
